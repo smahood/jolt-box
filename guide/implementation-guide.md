@@ -201,8 +201,10 @@ Passing a plain fn still works for one-off use.
 `simulate` steps the world on the fixed timestep and returns a realized
 vector of samples, so a spring's period, peak height or settling time can be
 checked right at the REPL. The headless tests use the same function. Small
-helpers to go with it: `(b2/peak samples :ball :y)`, `(b2/period samples
-:ball :y)`, `(b2/settled-at samples :ball)`.
+helpers to go with it: `(b2/series samples :ball :y)` → `[[t v] ...]`,
+`(b2/extent samples :ball :y)` → `{:min :max}` (with y-down, the highest point
+reached is the `:min` of `:y`), `(b2/period samples :ball :y)` and
+`(b2/settled-at samples :ball)`.
 
 ### 4.6 Reaching the world inside the running game
 
@@ -238,7 +240,7 @@ live.
 
 ---
 
-## 5. Step 0: foundations (no game changes)
+## 5. Step 0: foundations (no game changes) ✅ done
 
 ### 5.1 Engine version and build
 
@@ -273,14 +275,17 @@ live.
 
   ```clojure
   {:id        <uint32 from b2StoreWorldId>
+   :gravity   [gx gy]
    :alive     <atom: false once destroyed, so stale handles throw>
    :registry  <atom: bodies, joints, names (§4.2)>
    :scratch   <per-world ffi buffers>
-   :cbs       <atom of foreign-callables to free on destroy>
-   :err       <atom: the error a callback caught, if any>
    :acc       <atom: fixed-step time accumulator>
    :max-steps <cap on steps per step-fixed!, default 5>}
   ```
+
+  It's a record (`jolt-box.box2d/World`). The first step that registers a
+  callback adds `:cbs` (foreign-callables to free on destroy) and `:err` (the
+  error a callback caught).
 
   **Scratch buffers belong to the world, not to the namespace.**
   naval-battle uses global `def`'d buffers, which is fine for one world on one
@@ -312,7 +317,9 @@ live.
 `:gravity [0 9.8]` and use screen-style coordinates (y grows downward). In
 y-down space a positive Box2D angle turns clockwise on screen, which is the
 same direction as raylib's `rotation`. So the conversion is just radians to
-degrees, with no sign flip. The library makes no assumption either way.
+degrees, with no sign flip. The default gravity is `[0 9.8]` to match raylib;
+pass `[0 -9.8]` for y-up. Nothing else in the library cares which way y
+points.
 
 **Pixels ↔ meters lives in the game** (e.g. `PPM 100.0`, so the toilet is about
 1 m). The library never sees a pixel.
@@ -371,6 +378,7 @@ The repo scaffold, the build tasks, and this minimal API:
 (b2/step! w dt substeps)
 (b2/step-fixed! w frame-dt)                       ; → alpha
 (b2/simulate w seconds {:sample [names-or-ids] :every dt})  ; → samples
+(b2/series samples body field)  (b2/extent ...)  (b2/period ...)  (b2/settled-at samples body)
 
 ;; bodies (name optional; re-evaluating a named body replaces it)
 (b2/body! w :toilet {:type :static|:dynamic|:kinematic

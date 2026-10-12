@@ -1,0 +1,5 @@
+{:paths ["src"]
+
+ ;; Dimension-free helpers shared by jolt-box/box2d (and later box3d).
+ ;; Only things that clearly don't care about 2D vs 3D live here.
+ :deps {}}

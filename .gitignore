@@ -12,3 +12,10 @@ pom.xml.asc
 .lein-failures
 .nrepl-port
 .cpcache/
+.jolt/
+.DS_Store
+
+# native build output and the vendored Box2D checkout; `jolt native` regenerates both
+vendor/
+*.dylib
+*.so
