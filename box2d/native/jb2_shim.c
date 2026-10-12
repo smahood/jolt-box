@@ -118,6 +118,8 @@ uint64_t jb2_body_add_box(uint64_t body, double half_w, double half_h, double ox
 	sd.material.restitution = (float)restitution;
 	sd.enableContactEvents = (flags & JB2_SHAPE_CONTACT_EVENTS) != 0;
 	sd.enableHitEvents = (flags & JB2_SHAPE_HIT_EVENTS) != 0;
+	sd.isSensor = (flags & JB2_SHAPE_SENSOR) != 0;
+	sd.enableSensorEvents = (flags & JB2_SHAPE_SENSOR_EVENTS) != 0;
 	b2Polygon box = b2MakeOffsetBox((float)half_w, (float)half_h,
 	                                (b2Vec2){ (float)ox, (float)oy }, jb2_rot(angle));
 	return b2StoreShapeId(b2CreatePolygonShape(b2LoadBodyId(body), &sd, &box));
@@ -342,6 +344,52 @@ int jb2_world_contact_events(uint32_t world, int kind, uint64_t *ids_out, double
 			d[3] = e->point.y;
 			d[4] = e->approachSpeed;
 		}
+	}
+	return total;
+}
+
+/* --- sensors -------------------------------------------------------------- */
+
+int jb2_shape_enable_sensor_events(uint64_t shape, int enable)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2Shape_EnableSensorEvents(b2LoadShapeId(shape), enable != 0);
+	return JB2_OK;
+}
+
+int jb2_shape_sensor_overlaps(uint64_t shape, uint64_t *ids_out, int cap)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2ShapeId id = b2LoadShapeId(shape);
+	if (!b2Shape_IsSensor(id)) return JB2_BAD_ID;
+	if (cap > JB2_MAX_OVERLAPS) cap = JB2_MAX_OVERLAPS;
+	if (cap < 0) cap = 0;
+	b2ShapeId overlaps[JB2_MAX_OVERLAPS];
+	int n = b2Shape_GetSensorOverlaps(id, overlaps, cap);
+	int written = 0;
+	for (int i = 0; i < n; ++i)
+	{
+		if (!b2Shape_IsValid(overlaps[i])) continue; /* destroyed since the step */
+		ids_out[written * 2] = b2StoreShapeId(overlaps[i]);
+		ids_out[written * 2 + 1] = b2StoreBodyId(b2Shape_GetBody(overlaps[i]));
+		++written;
+	}
+	return written;
+}
+
+int jb2_world_sensor_events(uint32_t world, int kind, uint64_t *ids_out, int cap)
+{
+	if (!jb2_world_is_valid(world)) return JB2_BAD_ID;
+	b2SensorEvents ev = b2World_GetSensorEvents(b2LoadWorldId(world));
+	int total = kind == JB2_EVENTS_BEGIN ? ev.beginCount : kind == JB2_EVENTS_END ? ev.endCount : 0;
+	int n = total < cap ? total : cap;
+	for (int i = 0; i < n; ++i)
+	{
+		b2ShapeId sensor = kind == JB2_EVENTS_BEGIN ? ev.beginEvents[i].sensorShapeId
+		                                            : ev.endEvents[i].sensorShapeId;
+		b2ShapeId visitor = kind == JB2_EVENTS_BEGIN ? ev.beginEvents[i].visitorShapeId
+		                                             : ev.endEvents[i].visitorShapeId;
+		jb2_event_ids(sensor, visitor, ids_out + i * JB2_EVENT_IDS);
 	}
 	return total;
 }

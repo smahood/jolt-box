@@ -31,7 +31,8 @@
 
 ;; --- world handle ------------------------------------------------------------
 
-(defrecord World [id gravity alive registry scratch acc max-steps collect-events? events])
+(defrecord World [id gravity alive registry scratch acc max-steps collect-events? events
+                  sensor-events])
 
 (def ^:private EVENT-CAP
   "The most events of one kind read back from a single step."
@@ -43,6 +44,7 @@
   4096)
 
 (def ^:private no-events {:begin [] :end [] :hit [] :dropped 0})
+(def ^:private no-sensor-events {:begin [] :end [] :dropped 0})
 
 (defmethod print-method World [w ^java.io.Writer out]
   (.write out (if @(:alive w)
@@ -71,9 +73,10 @@
     :max-steps n           the most steps one step-fixed! call runs, default 5
     :hit-event-threshold   approach speed (m/s) a collision needs to count as
                            a hit, default Box2D's 1.0
-    :collect-events?       default true: every step's contact events are kept
-                           until contact-events is called, so none are lost
-                           when step-fixed! runs several steps in one frame"
+    :collect-events?       default true: every step's contact and sensor
+                           events are kept until contact-events /
+                           sensor-events is called, so none are lost when
+                           step-fixed! runs several steps in one frame"
   ([] (make-world {}))
   ([{:keys [gravity max-steps hit-event-threshold collect-events?]
      :or   {gravity [0 9.8] max-steps 5 hit-event-threshold -1.0 collect-events? true}}]
@@ -86,8 +89,10 @@
                :ids   (ffi/alloc (* 8 f/MAX-CONTACTS))                 ; contact body ids
                :data  (ffi/alloc (* 8 f/CONTACT-DOUBLES f/MAX-CONTACTS))
                :ev-ids  (ffi/alloc (* 8 f/EVENT-IDS EVENT-CAP))             ; contact events
-               :ev-data (ffi/alloc (* 8 f/EVENT-DOUBLES EVENT-CAP))}
-              (atom 0.0) max-steps (boolean collect-events?) (atom no-events)))))
+               :ev-data (ffi/alloc (* 8 f/EVENT-DOUBLES EVENT-CAP))
+               :overlaps (ffi/alloc (* 8 2 f/MAX-OVERLAPS))}                ; sensor overlaps
+              (atom 0.0) max-steps (boolean collect-events?) (atom no-events)
+              (atom no-sensor-events)))))
 
 (defn destroy!
   "Releases world w and everything in it. Safe to call more than once."
@@ -152,14 +157,20 @@
   "Adds one shape spec to body id. Returns the shape id, or nil if Box2D
   rejected it."
   [id {:keys [box offset angle density friction restitution
-              contact-events? hit-events?]
-       :or   {offset [0 0] angle 0 density 1.0 friction 0.6 restitution 0.0}
+              contact-events? hit-events? sensor? sensor-events?]
+       :or   {offset [0 0] angle 0 friction 0.6 restitution 0.0}
        :as   shape}]
   (cond
     box (let [[hw hh] box
               [ox oy] offset
+              ;; a sensor weighs nothing unless asked: a foot sensor
+              ;; shouldn't change how heavy its body is
+              density (or density (if sensor? 0.0 1.0))
               flags (bit-or (if contact-events? f/SHAPE-CONTACT-EVENTS 0)
-                            (if hit-events? f/SHAPE-HIT-EVENTS 0))
+                            (if hit-events? f/SHAPE-HIT-EVENTS 0)
+                            (if sensor? f/SHAPE-SENSOR 0)
+                            ;; a sensor is pointless without its events
+                            (if (or sensor-events? sensor?) f/SHAPE-SENSOR-EVENTS 0))
               sid (f/body-add-box id (double hw) (double hh) (double ox) (double oy)
                                   (double angle) (double density)
                                   (double friction) (double restitution) (int flags))]
@@ -181,9 +192,15 @@
     :user-data u64   an integer to hand back later, e.g. a flecs entity id
     :shapes          [{:box [half-w half-h] :offset [x y] :angle a
                        :density d :friction f :restitution r
-                       :contact-events? b :hit-events? b}]
+                       :contact-events? b :hit-events? b
+                       :sensor? b :sensor-events? b}]
                      Contact (begin/end touching) and hit events are off by
-                     default; they're reported when either shape asks."
+                     default; they're reported when either shape asks.
+                     A :sensor? shape detects overlaps without colliding,
+                     and weighs nothing unless given a :density. It only
+                     sees shapes with :sensor-events? true (static ones
+                     included), so turn that on for whatever it should
+                     notice."
   ([w spec] (body! w nil spec))
   ([w body-name {:keys [type pos angle fixed-rotation? awake? user-data shapes]
                  :or   {type :static pos [0 0] angle 0 awake? true user-data 0}
@@ -430,9 +447,10 @@
 
 (defn set-shape!
   "Changes a shape's settings while the world runs. Any of
-  {:friction f :restitution r :density d :contact-events? b :hit-events? b}.
-  A new density updates the body's mass."
-  [w shape {:keys [friction restitution density contact-events? hit-events?] :as settings}]
+  {:friction f :restitution r :density d :contact-events? b :hit-events? b
+   :sensor-events? b}. A new density updates the body's mass."
+  [w shape {:keys [friction restitution density contact-events? hit-events? sensor-events?]
+            :as settings}]
   (live! w)
   (let [ok! #(check! % :set-shape! {:shape shape :settings settings})]
     (when (some? friction)        (ok! (f/shape-set-friction shape (double friction))))
@@ -440,6 +458,7 @@
     (when (some? density)         (ok! (f/shape-set-density shape (double density))))
     (when (some? contact-events?) (ok! (f/shape-enable-contact-events shape (int (c/flag contact-events?)))))
     (when (some? hit-events?)     (ok! (f/shape-enable-hit-events shape (int (c/flag hit-events?)))))
+    (when (some? sensor-events?)  (ok! (f/shape-enable-sensor-events shape (int (c/flag sensor-events?)))))
     nil))
 
 (defn user-data
@@ -485,21 +504,34 @@
      :hit     (:events (:hit r))
      :dropped (reduce + (map :dropped (vals r)))}))
 
+(declare step-sensor-events)
+
+(defn- add-pending
+  "Adds new events (by kind, plus :dropped) to the pending ones, keeping at
+  most MAX-PENDING of each kind and counting the rest as dropped."
+  [pending new kinds]
+  (reduce (fn [p k]
+            (let [room (max 0 (- MAX-PENDING (count (get p k))))
+                  evs  (get new k)]
+              (-> p
+                  (update k into (take room) evs)
+                  (update :dropped + (max 0 (- (count evs) room))))))
+          (update pending :dropped + (:dropped new))
+          kinds))
+
+(defn- any-events? [new kinds]
+  (or (pos? (:dropped new)) (some #(seq (get new %)) kinds)))
+
 (defn- collect-events!
-  "Adds the last step's events to the ones waiting for contact-events."
+  "Adds the last step's contact and sensor events to the ones waiting for
+  contact-events and sensor-events."
   [w]
   (let [new (step-events w)]
-    (when (or (seq (:begin new)) (seq (:end new)) (seq (:hit new)) (pos? (:dropped new)))
-      (swap! (:events w)
-             (fn [pending]
-               (reduce (fn [p k]
-                         (let [room (- MAX-PENDING (count (get p k)))
-                               evs  (get new k)]
-                           (-> p
-                               (update k into (take (max 0 room)) evs)
-                               (update :dropped + (max 0 (- (count evs) (max 0 room)))))))
-                       (update pending :dropped + (:dropped new))
-                       [:begin :end :hit]))))))
+    (when (any-events? new [:begin :end :hit])
+      (swap! (:events w) add-pending new [:begin :end :hit])))
+  (let [new (step-sensor-events w)]
+    (when (any-events? new [:begin :end])
+      (swap! (:sensor-events w) add-pending new [:begin :end]))))
 
 (defn contact-events
   "Contact events as plain data:
@@ -537,6 +569,74 @@
                                                  :other-user (:user-b e))
                                     normal (assoc :normal (mapv - normal))))))
           events)))
+
+;; --- sensors -----------------------------------------------------------------
+
+(defn- read-sensor-events
+  "Box2D's sensor events of one kind from the last step."
+  [w kind-n]
+  (let [{:keys [ev-ids]} (:scratch w)
+        total (f/world-sensor-events (:id w) (int kind-n) ev-ids EVENT-CAP)
+        _     (when (neg? total) (check! total :sensor-events {:world (:id w)}))
+        reg   @(:registry w)
+        about (fn [body]
+                (let [e (c/entry reg :body body)]
+                  [(:name e) (get-in e [:spec :user-data] 0)]))]
+    {:dropped (max 0 (- total EVENT-CAP))
+     :events
+     (mapv (fn [i]
+             (let [id #(ffi/read ev-ids :uint64 (* 8 (+ (* i f/EVENT-IDS) %)))
+                   sb (id 2) vb (id 3)
+                   [sn su] (about sb)
+                   [vn vu] (about vb)]
+               {:sensor-shape (id 0) :visitor-shape (id 1)
+                :sensor-body sb :visitor-body vb
+                :sensor-name sn :visitor-name vn
+                :sensor-user su :visitor-user vu}))
+           (range (min total EVENT-CAP)))}))
+
+(defn- step-sensor-events
+  "Both kinds from the last step: {:begin [..] :end [..] :dropped n}."
+  [w]
+  (let [b (read-sensor-events w f/EVENTS-BEGIN)
+        e (read-sensor-events w f/EVENTS-END)]
+    {:begin (:events b) :end (:events e) :dropped (+ (:dropped b) (:dropped e))}))
+
+(defn sensor-events
+  "Sensor events as plain data:
+    {:begin [{:sensor-shape :sensor-body :sensor-name :sensor-user
+              :visitor-shape :visitor-body :visitor-name :visitor-user}]
+     :end   [...]
+     :dropped n}
+  :begin when a shape starts overlapping a sensor, :end when it stops (also
+  when either is destroyed or teleported away; a destroyed body's id is 0).
+  Unlike contacts, sensors are up to date as of the last step: no lag.
+
+  Like contact-events: everything since the last call with
+  :collect-events? on (the default), or the last step's events with it off."
+  [w]
+  (live! w)
+  (if (:collect-events? w)
+    (let [[old _] (reset-vals! (:sensor-events w) no-sensor-events)] old)
+    (step-sensor-events w)))
+
+(defn sensor-overlaps
+  "What a sensor shape overlaps right now (as of the last step):
+  [{:shape id :body id :name name :user u}]."
+  [w sensor-shape]
+  (live! w)
+  (let [buf (:overlaps (:scratch w))
+        n   (f/shape-sensor-overlaps sensor-shape buf f/MAX-OVERLAPS)
+        reg @(:registry w)]
+    (when (neg? n) (check! n :sensor-overlaps {:shape sensor-shape :hint "is it a :sensor? shape?"}))
+    (mapv (fn [i]
+            (let [body (ffi/read buf :uint64 (* 8 (inc (* 2 i))))
+                  e    (c/entry reg :body body)]
+              {:shape (ffi/read buf :uint64 (* 8 (* 2 i)))
+               :body  body
+               :name  (:name e)
+               :user  (get-in e [:spec :user-data] 0)}))
+          (range n))))
 
 ;; --- inspection --------------------------------------------------------------
 
@@ -614,7 +714,8 @@
 (defn debug-shapes
   "Every shape in w as plain data for drawing, in world units:
   {:kind :polygon :points [[x y] ...] :center [x y]
-   :body id :name name :shape id :type :static|:kinematic|:dynamic :awake? bool}.
+   :body id :name name :shape id :type :static|:kinematic|:dynamic :awake? bool
+   :sensor? bool}.
   Draw the points as a closed loop. No drawing happens here: the caller
   (e.g. raylib on the main thread) does that."
   [w]
@@ -626,7 +727,8 @@
                  [awake? type]       (awake-and-type w id)]
              (mapv (fn [shape-spec sid]
                      (cond-> {:body id :name body-name :shape sid
-                              :type type :awake? awake? :center [x y]}
+                              :type type :awake? awake? :center [x y]
+                              :sensor? (boolean (:sensor? shape-spec))}
                        (:box shape-spec) (assoc :kind :polygon
                                                 :points (box-points shape-spec x y angle))))
                    (:shapes spec) shapes))))

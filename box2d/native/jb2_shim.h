@@ -49,6 +49,8 @@ int jb2_body_mass_data(uint64_t body, double *out);
  * invalid or the box degenerate. Mass is updated. */
 #define JB2_SHAPE_CONTACT_EVENTS 1
 #define JB2_SHAPE_HIT_EVENTS 2
+#define JB2_SHAPE_SENSOR 4          /* detects overlaps, doesn't collide */
+#define JB2_SHAPE_SENSOR_EVENTS 8   /* a sensor reports, or a shape can be seen by sensors */
 uint64_t jb2_body_add_box(uint64_t body, double half_w, double half_h, double ox, double oy,
                           double angle, double density, double friction, double restitution,
                           int flags);
@@ -59,6 +61,13 @@ int jb2_shape_set_restitution(uint64_t shape, double restitution);
 int jb2_shape_set_density(uint64_t shape, double density); /* and updates the body's mass */
 int jb2_shape_enable_contact_events(uint64_t shape, int enable);
 int jb2_shape_enable_hit_events(uint64_t shape, int enable);
+int jb2_shape_enable_sensor_events(uint64_t shape, int enable);
+
+/* The shapes a sensor shape overlaps right now (as of the last step), up to
+ * cap (at most JB2_MAX_OVERLAPS). ids_out[i*2 ..] = shape, body. Returns the
+ * number written, or JB2_BAD_ID (also for a shape that isn't a sensor). */
+#define JB2_MAX_OVERLAPS 64
+int jb2_shape_sensor_overlaps(uint64_t shape, uint64_t *ids_out, int cap);
 
 /* body motion. All return JB2_OK or JB2_BAD_ID. Impulses and forces are in
  * world space; at_point 0 applies at the center of mass, 1 at (px, py). */
@@ -99,5 +108,11 @@ int jb2_body_contacts(uint64_t body, uint64_t *ids_out, double *data_out, int ca
 #define JB2_EVENT_IDS 4
 #define JB2_EVENT_DOUBLES 5
 int jb2_world_contact_events(uint32_t world, int kind, uint64_t *ids_out, double *data_out, int cap);
+
+/* Sensor events from the last step. kind: JB2_EVENTS_BEGIN or JB2_EVENTS_END.
+ * Copies up to cap and returns the total (or JB2_BAD_ID).
+ * ids_out[i*4 ..] = sensor shape, visitor shape, sensor body, visitor body
+ * (a body is 0 if its shape has since been destroyed). */
+int jb2_world_sensor_events(uint32_t world, int kind, uint64_t *ids_out, int cap);
 
 #endif

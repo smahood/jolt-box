@@ -593,7 +593,29 @@ something hits, not a fixed hit count.
 - in the game: walls take damage from hard hits only; the old path still works
   behind the toggle
 
-### Step 4: sensors (optional cleanup of grounding)
+### Step 4: sensors (optional cleanup of grounding) ✅ done
+
+*What changed while building it:*
+- Shape specs take `:sensor?` and `:sensor-events?`. **In Box2D v3.1 a sensor
+  only sees shapes that have sensor events turned on** (static ones included),
+  so the floor and walls need `:sensor-events? true`. A `:sensor?` shape turns
+  its own sensor events on, and **weighs nothing unless given a `:density`**,
+  so adding a foot sensor doesn't change the body's mass.
+- `sensor-events` is collected per step exactly like `contact-events`
+  (`{:begin :end :dropped}`, each event naming the sensor and visitor shape,
+  body, name and user data). `sensor-overlaps` gives what a sensor overlaps
+  now. `set-shape!` takes `:sensor-events?`. `debug-shapes` marks `:sensor?`.
+- **Sensors don't lag.** Box2D updates them at the end of each step, so
+  `sensor-overlaps` is right the moment a body takes off. That makes a foot
+  sensor a better "standing" check than `grounded?` (which uses contacts,
+  which lag a step).
+
+*In the game:* the toilet's foot is a strip 90 px wide that pokes 1.5 px
+below it. "Standing" is "the foot overlaps something". With 3 px it reported
+ground about 2 px before touching down, so hops started 2 px high. A landing
+(the foot's `:begin` event) only counts after a take-off, so spawning or an F6
+teleport doesn't count. Each landing on the Box2D path makes a small puff of
+floor dust. Sensors draw orange in the F7 outlines.
 
 *Library:* `:sensor? true` on shape specs, `:enable-sensor-events?`, and
 `(b2/sensor-events w)` → `{:begin [{:sensor us :visitor uv}] :end [...]}`.

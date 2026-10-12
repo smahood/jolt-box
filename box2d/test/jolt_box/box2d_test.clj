@@ -409,3 +409,74 @@
         (b2/destroy-body! w :crate)
         (is (thrown-ex-info? #(b2/set-shape! w s {:friction 1})))
         (is (thrown-ex-info? #(b2/shape-body w s)))))))
+
+;; --- step 4: sensors ----------------------------------------------------------
+
+(defn- footed-crate!
+  "A crate with a thin foot sensor along its bottom edge."
+  [w & {:keys [pos] :or {pos [0 0]}}]
+  (b2/body! w :crate {:type :dynamic :pos pos :fixed-rotation? true
+                      :shapes [{:box [0.5 0.5]}
+                               {:box [0.45 0.03] :offset [0 0.5] :sensor? true}]}))
+
+(defn- foot [w] (second (b2/shapes w :crate)))
+
+(deftest foot-sensor-landing-and-take-off
+  (b2/with-world [w]
+    (b2/body! w :floor {:pos [0 2] :user-data 9 :shapes [{:box [10 0.1] :sensor-events? true}]})
+    (footed-crate! w)
+    (is (near? (b2/mass w :crate) 1.0 1e-4) "the sensor adds no mass")
+    (b2/simulate w 0.2)
+    (is (= [] (b2/sensor-overlaps w (foot w))) "nothing under it while falling")
+    (b2/simulate w 1.5)
+    (let [{:keys [begin end]} (b2/sensor-events w)
+          e (first begin)]
+      (is (= 1 (count begin)) "landing begins one overlap")
+      (is (= [] end))
+      (is (= {:sensor-name :crate :visitor-name :floor :visitor-user 9}
+             (select-keys e [:sensor-name :visitor-name :visitor-user])))
+      (is (= (foot w) (:sensor-shape e))))
+    (is (= [:floor] (mapv :name (b2/sensor-overlaps w (foot w)))))
+    (testing "taking off ends it, with no lag"
+      (b2/impulse! w :crate [0 -5])
+      (b2/step! w b2/STEP)
+      (b2/step! w b2/STEP)
+      (is (= [] (b2/sensor-overlaps w (foot w))))
+      (is (= 1 (count (:end (b2/sensor-events w))))))
+    (testing "and landing again begins it again"
+      (b2/simulate w 2.0)
+      (is (= 1 (count (:begin (b2/sensor-events w))))))))
+
+(deftest sensors-only-see-shapes-that-ask
+  (b2/with-world [w]
+    (b2/body! w :floor {:pos [0 2] :shapes [{:box [10 0.1]}]})       ; no :sensor-events?
+    (footed-crate! w)
+    (b2/simulate w 2.0)
+    (is (= [] (b2/sensor-overlaps w (foot w))))
+    (is (= [] (:begin (b2/sensor-events w))))
+    (testing "until it's turned on"
+      (b2/set-shape! w (first (b2/shapes w :floor)) {:sensor-events? true})
+      (b2/step! w b2/STEP)
+      (is (= [:floor] (mapv :name (b2/sensor-overlaps w (foot w))))))))
+
+(deftest sensors-dont-collide
+  (b2/with-world [w]
+    (floor! w)
+    (b2/body! w :ghost {:type :dynamic :shapes [{:box [0.5 0.5] :sensor? true :density 1}]})
+    (b2/simulate w 2.0)
+    (is (> (:y (b2/transform w :ghost)) 5) "falls straight through the floor")
+    (testing "a static sensor zone sees a body pass through it"
+      (b2/body! w :zone {:pos [0 -3] :shapes [{:box [2 0.5] :sensor? true}]})
+      (b2/body! w :ball {:type :dynamic :pos [0 -6] :shapes [{:box [0.2 0.2] :sensor-events? true}]})
+      (b2/sensor-events w)
+      (b2/simulate w 1.5)
+      (let [{:keys [begin end]} (b2/sensor-events w)]
+        (is (= [[:zone :ball]] (mapv (juxt :sensor-name :visitor-name) begin)))
+        (is (= [[:zone :ball]] (mapv (juxt :sensor-name :visitor-name) end)))))))
+
+(deftest sensor-odds-and-ends
+  (b2/with-world [w]
+    (footed-crate! w)
+    (is (thrown-ex-info? #(b2/sensor-overlaps w (first (b2/shapes w :crate))))
+        "overlaps of a shape that isn't a sensor")
+    (is (= [false true] (mapv :sensor? (b2/debug-shapes w))))))

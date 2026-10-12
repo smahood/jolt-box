@@ -45,7 +45,7 @@ jolt test     # headless tests
 ;=> [{:x ~0.0 :y ~1.4 :angle ~0.0} 1.0]   resting on the floor after a second
 ```
 
-## API (box2d, steps 0–3)
+## API (box2d, steps 0–4)
 
 Meters, kilograms, seconds, radians. Anywhere a body id goes, a keyword
 name works too. Re-evaluating a named `body!` replaces the old body.
@@ -56,7 +56,7 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(destroy! w)`, `(with-world [w opts] ...)` | release it; `with-world` does so in `finally` |
 | `(step! w dt)`, `(step! w dt substeps)` | a raw step (4 substeps by default) |
 | `(step-fixed! w frame-dt)` | fixed 1/60 s steps, at most `:max-steps` per call; returns alpha |
-| `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r :contact-events? b :hit-events? b}]}` → id |
+| `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r :contact-events? b :hit-events? b :sensor? b :sensor-events? b}]}` → id. A sensor only sees shapes with `:sensor-events? true` |
 | `(destroy-body! w body)` | |
 | `(transform w body)`, `(velocity w body)` | `{:x :y :angle}`, `{:vx :vy :w}` |
 | `(impulse! w body [ix iy])`, `(impulse! w body [ix iy] [px py])` | a change in momentum, at the center or a world point |
@@ -69,11 +69,13 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(gravity w)` | `[gx gy]` |
 | `(mass w body)`, `(mass-data w body)`, `(momentum w body)` | kg; `{:mass :inertia :center [x y] :local-center [x y]}`; `{:px :py}` |
 | `(shapes w body)`, `(shape-body w shape)`, `(user-data w body)` | |
-| `(set-shape! w shape {:friction :restitution :density :contact-events? :hit-events?})` | change a shape live (density updates the mass) |
+| `(set-shape! w shape {:friction :restitution :density :contact-events? :hit-events? :sensor-events?})` | change a shape live (density updates the mass) |
 | `(contact-events w)` | `{:begin [..] :end [..] :hit [{:body-a :body-b :name-a :name-b :user-a :user-b :normal :point :speed}] :dropped n}`, everything since the last call |
 | `(events-for w events body)` | those events from one body's point of view: `:other :other-name :other-user`, normal into it |
+| `(sensor-events w)` | `{:begin [{:sensor-shape :sensor-body :sensor-name :sensor-user :visitor-shape :visitor-body :visitor-name :visitor-user}] :end [..] :dropped n}`, everything since the last call |
+| `(sensor-overlaps w sensor-shape)` | `[{:shape :body :name :user}]` overlapping now (no lag) |
 | `(bodies w)`, `(body-info w body)`, `(snapshot w)` | inspection, as plain data |
-| `(debug-shapes w)` | `[{:kind :polygon :points [[x y] ...] :center [x y] :body :name :shape :type :awake?}]`, for drawing outlines |
+| `(debug-shapes w)` | `[{:kind :polygon :points [[x y] ...] :center [x y] :body :name :shape :type :awake? :sensor?}]`, for drawing outlines |
 | `(simulate w seconds {:sample [bodies] :every dt})` | step and sample, for the REPL and tests |
 | `(series s body field)`, `(extent ...)`, `(period ...)`, `(settled-at s body)` | measuring samples |
 

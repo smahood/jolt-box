@@ -25,6 +25,8 @@
   [:uint64 :double :double :double :double :double :double :double :double :int] :uint64)
 (def SHAPE-CONTACT-EVENTS 1)   ; JB2_SHAPE_* flag bits
 (def SHAPE-HIT-EVENTS 2)
+(def SHAPE-SENSOR 4)
+(def SHAPE-SENSOR-EVENTS 8)
 (ffi/defcfn shape-valid    "jb2_shape_is_valid" [:uint64] :int)
 (ffi/defcfn shape-body     "jb2_shape_body"     [:uint64] :uint64)
 (ffi/defcfn shape-set-friction    "jb2_shape_set_friction"    [:uint64 :double] :int)
@@ -32,6 +34,9 @@
 (ffi/defcfn shape-set-density     "jb2_shape_set_density"     [:uint64 :double] :int)
 (ffi/defcfn shape-enable-contact-events "jb2_shape_enable_contact_events" [:uint64 :int] :int)
 (ffi/defcfn shape-enable-hit-events     "jb2_shape_enable_hit_events"     [:uint64 :int] :int)
+(ffi/defcfn shape-enable-sensor-events  "jb2_shape_enable_sensor_events"  [:uint64 :int] :int)
+(def MAX-OVERLAPS 64)       ; JB2_MAX_OVERLAPS
+(ffi/defcfn shape-sensor-overlaps "jb2_shape_sensor_overlaps" [:uint64 :pointer :int] :int)
 (ffi/defcfn body-mass-data "jb2_body_mass_data" [:uint64 :pointer] :int)
 
 ;; --- body motion --------------------------------------------------------------
@@ -59,3 +64,4 @@
 (def EVENT-DOUBLES 5)       ; JB2_EVENT_DOUBLES
 (ffi/defcfn world-contact-events "jb2_world_contact_events"
   [:uint32 :int :pointer :pointer :int] :int)
+(ffi/defcfn world-sensor-events "jb2_world_sensor_events" [:uint32 :int :pointer :int] :int)
