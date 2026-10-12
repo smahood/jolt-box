@@ -27,6 +27,10 @@
 (def SHAPE-HIT-EVENTS 2)
 (def SHAPE-SENSOR 4)
 (def SHAPE-SENSOR-EVENTS 8)
+(ffi/defcfn body-add-circle "jb2_body_add_circle"
+  [:uint64 :double :double :double :double :double :double :int] :uint64)
+(ffi/defcfn body-add-capsule "jb2_body_add_capsule"
+  [:uint64 :double :double :double :double :double :double :double :double :int] :uint64)
 (ffi/defcfn shape-valid    "jb2_shape_is_valid" [:uint64] :int)
 (ffi/defcfn shape-body     "jb2_shape_body"     [:uint64] :uint64)
 (ffi/defcfn shape-set-friction    "jb2_shape_set_friction"    [:uint64 :double] :int)
@@ -65,3 +69,29 @@
 (ffi/defcfn world-contact-events "jb2_world_contact_events"
   [:uint32 :int :pointer :pointer :int] :int)
 (ffi/defcfn world-sensor-events "jb2_world_sensor_events" [:uint32 :int :pointer :int] :int)
+
+;; --- joints -------------------------------------------------------------------
+(ffi/defcfn joint-valid    "jb2_joint_is_valid"  [:uint64] :int)
+(ffi/defcfn joint-destroy  "jb2_joint_destroy"   [:uint64] :int)
+(ffi/defcfn joint-wake     "jb2_joint_wake"      [:uint64] :int)
+(ffi/defcfn joint-set-collide-connected "jb2_joint_set_collide_connected" [:uint64 :int] :int)
+(ffi/defcfn joint-bodies   "jb2_joint_bodies"    [:uint64 :pointer] :int)
+(def JOINT-DOUBLES 11)      ; JB2_JOINT_DOUBLES
+(ffi/defcfn joint-read     "jb2_joint_read"      [:uint64 :pointer] :int)
+
+;; selectors for the <type>-set functions (JB2_SET_*)
+(def SET-SPRING-ON 0)
+(def SET-SPRING-HERTZ 1)
+(def SET-SPRING-DAMPING 2)
+(def SET-TARGET 3)
+(def SET-LIMIT-ON 4)
+(def SET-LIMITS 5)
+(def SET-MOTOR-ON 6)
+(def SET-MOTOR-SPEED 7)
+(def SET-MAX-MOTOR 8)
+
+(def PRISMATIC-PARAMS 18)   ; JB2_PRISMATIC_PARAMS
+(def PRISMATIC-READ 15)     ; JB2_PRISMATIC_READ
+(ffi/defcfn prismatic-create "jb2_prismatic_create" [:uint32 :uint64 :uint64 :pointer :uint64] :uint64)
+(ffi/defcfn prismatic-set    "jb2_prismatic_set"    [:uint64 :int :double :double] :int)
+(ffi/defcfn prismatic-read   "jb2_prismatic_read"   [:uint64 :pointer] :int)

@@ -623,7 +623,53 @@ floor dust. Sensors draw orange in the F7 outlines.
 gives you "landed this frame" events for dust puffs and squash animation.
 *Acceptance:* begin and end fire once per landing and per take-off.
 
-### Step 5: spring jump (prismatic joint)
+### Step 5: spring jump (prismatic joint) ✅ done
+
+*What changed while building it:*
+- **Joint shim pattern.** Each joint type gets three C functions: `create`
+  from a params array (so new fields don't change the signature), `set` one
+  setting by selector, and `read` everything into a buffer. Plus generic
+  `joint_destroy` / `bodies` / `read` (constraint force and torque,
+  separations, local anchors) / `wake` / `set_collide_connected`. Revolute,
+  distance and weld follow the same shape. `set` wakes the bodies, so a
+  change reaches a sleeping body.
+- **Joint specs are world space, kept in local frames.** `:anchor`,
+  `:anchor-a`/`:anchor-b` and `:axis` are given where the bodies are now
+  (default anchor: body b's origin), turned into local frames once, and kept
+  in the registry as `:frame`. Re-evaluating a named body remakes its joints
+  from that frame, with settings changed by `set-joint!` (which merges them
+  into the stored spec). Destroying a body drops its joints from the registry.
+- **Stale joint ids throw `ex-info`**, like bodies (`joint-entry` checks
+  `jb2_joint_is_valid`).
+- `:circle` and `:capsule` shapes, drawn by `debug-shapes` (`:kind :circle
+  :at :radius`, `:kind :capsule :points :radius`); joints draw as `:kind
+  :segment` between their anchors.
+- **Box2D's springs lose energy each swing even at `:damping 0`**, about 15%
+  per cycle at 2 Hz, from its stable soft-step solver. The period is right;
+  the amplitude isn't conserved. Expect to tune by measuring (`simulate`).
+
+*In the game (found by tuning with `simulate`):*
+- The toilet is a base (40 px, 0.2 kg, with the foot sensor) and a bowl
+  (68 px, 0.88 kg) on a vertical prismatic joint, `:limit [-0.3 0]`. Most of
+  the weight is in the bowl so the yank at the limit wastes less speed. The
+  total is still 1.08 kg, so `MOMENTUM-PER-HP` means the same.
+- **13 Hz, 22 cm of squash** gives the old hop's 51 px. With a 0.2 kg base
+  and damping 0.3 even 10 Hz only reached ~30 px.
+- **Damping changes during a hop:** 1.0 (critically damped) on the ground
+  and while charging, 0.3 from release to landing. Low damping all the time
+  made it pogo 10–16 px back up after every landing; high damping all the
+  time wasted the launch.
+- **Sideways speed is given at take-off, not at release.** While the spring
+  pushes, the base is pressed so hard into the floor that friction stopped it
+  within a frame, and the joint dragged the bowl back with it.
+- Holding charges for 0.25 s and launches by itself when full, so holding
+  still keeps hopping. A tap charges to at least 0.6, a small hop (14 px up,
+  41 px along). Hop height is roughly the square of the charge.
+- The bowl, tank and head are drawn `:lift` px off the base, from the
+  joint's translation, so the art follows the real spring.
+- The settings are in `game.physics/spring` and can be changed live:
+  `(game.sim/send! #(game.physics/tune! % {:hertz 14 :charge-time 0.2}))`.
+  They're not in the editor panel yet.
 
 The toilet becomes a **base** and a **bowl** joined by a vertical prismatic
 joint with a spring. Holding the key squashes the bowl down. Releasing lets

@@ -156,32 +156,43 @@
 (defn- add-shape!
   "Adds one shape spec to body id. Returns the shape id, or nil if Box2D
   rejected it."
-  [id {:keys [box offset angle density friction restitution
+  [id {:keys [box circle capsule radius offset angle density friction restitution
               contact-events? hit-events? sensor? sensor-events?]
        :or   {offset [0 0] angle 0 friction 0.6 restitution 0.0}
        :as   shape}]
-  (cond
-    box (let [[hw hh] box
-              [ox oy] offset
-              ;; a sensor weighs nothing unless asked: a foot sensor
-              ;; shouldn't change how heavy its body is
-              density (or density (if sensor? 0.0 1.0))
-              flags (bit-or (if contact-events? f/SHAPE-CONTACT-EVENTS 0)
-                            (if hit-events? f/SHAPE-HIT-EVENTS 0)
-                            (if sensor? f/SHAPE-SENSOR 0)
-                            ;; a sensor is pointless without its events
-                            (if (or sensor-events? sensor?) f/SHAPE-SENSOR-EVENTS 0))
-              sid (f/body-add-box id (double hw) (double hh) (double ox) (double oy)
-                                  (double angle) (double density)
-                                  (double friction) (double restitution) (int flags))]
-          (when-not (zero? sid) sid))
-    :else (throw (ex-info "unknown shape kind (step 0 supports :box)" {:shape shape}))))
+  (let [[ox oy] offset
+        ;; a sensor weighs nothing unless asked: a foot sensor shouldn't
+        ;; change how heavy its body is
+        density (double (or density (if sensor? 0.0 1.0)))
+        friction (double friction)
+        restitution (double restitution)
+        flags (int (bit-or (if contact-events? f/SHAPE-CONTACT-EVENTS 0)
+                           (if hit-events? f/SHAPE-HIT-EVENTS 0)
+                           (if sensor? f/SHAPE-SENSOR 0)
+                           ;; a sensor is pointless without its events
+                           (if (or sensor-events? sensor?) f/SHAPE-SENSOR-EVENTS 0)))
+        sid (cond
+              box     (let [[hw hh] box]
+                        (f/body-add-box id (double hw) (double hh) (double ox) (double oy)
+                                        (double angle) density friction restitution flags))
+              circle  (f/body-add-circle id (double ox) (double oy) (double circle)
+                                         density friction restitution flags)
+              capsule (let [[[x1 y1] [x2 y2]] capsule]
+                        (f/body-add-capsule id (double (+ x1 ox)) (double (+ y1 oy))
+                                            (double (+ x2 ox)) (double (+ y2 oy))
+                                            (double (or radius 0)) density friction restitution
+                                            flags))
+              :else (throw (ex-info "unknown shape kind: use :box, :circle or :capsule"
+                                    {:shape shape})))]
+    (when-not (zero? sid) sid)))
 
-(declare destroy-body!)
+(declare destroy-body! attached-joints remake-joint!)
 
 (defn body!
   "Creates a body and returns its id. With a keyword name, an existing body
   of that name is destroyed first, so re-evaluating the form replaces it.
+  Joints attached to the old body are made again on the new one, at the same
+  places on the body (and with any settings changed since).
 
   spec keys (all optional):
     :type            :static (default), :kinematic or :dynamic
@@ -191,6 +202,8 @@
     :awake?          false makes it start asleep (default true)
     :user-data u64   an integer to hand back later, e.g. a flecs entity id
     :shapes          [{:box [half-w half-h] :offset [x y] :angle a
+                       ;; or {:circle radius :offset [x y]}
+                       ;; or {:capsule [[x1 y1] [x2 y2]] :radius r :offset [x y]}
                        :density d :friction f :restitution r
                        :contact-events? b :hit-events? b
                        :sensor? b :sensor-events? b}]
@@ -210,9 +223,10 @@
      (throw (ex-info "body names are keywords" {:name body-name})))
    (let [type-n (or (body-types type)
                     (throw (ex-info "unknown body :type" {:type type})))]
-     (when-let [old (and body-name (c/resolve-id @(:registry w) :body body-name))]
-       (destroy-body! w old))
-     (let [[x y] pos
+     (let [old      (and body-name (c/resolve-id @(:registry w) :body body-name))
+           attached (when old (attached-joints @(:registry w) old))
+           _        (when old (destroy-body! w old))
+           [x y]    pos
            id (f/body-create (:id w) (int type-n) (double x) (double y) (double angle)
                              (int (c/flag fixed-rotation?)) (int (c/flag awake?))
                              (long user-data))]
@@ -227,13 +241,19 @@
                       acc))]
          (swap! (:registry w) c/add-entry :body id
                 (cond-> {:spec spec :shapes sids} body-name (assoc :name body-name)))
+         (doseq [[_ j] attached]
+           (remake-joint! w j old id))
          id)))))
 
 (defn destroy-body!
-  "Destroys a body (by name or id), with its shapes."
+  "Destroys a body (by name or id), with its shapes and joints."
   [w name-or-id]
   (let [id (body-id w name-or-id)]
-    (swap! (:registry w) c/remove-entry :body id)
+    (swap! (:registry w)
+           (fn [reg]
+             (reduce (fn [r [jid _]] (c/remove-entry r :joint jid))
+                     (c/remove-entry reg :body id)
+                     (attached-joints reg id))))
     (check! (f/body-destroy id) :destroy-body! {:body name-or-id})
     nil))
 
@@ -638,6 +658,238 @@
                :user  (get-in e [:spec :user-data] 0)}))
           (range n))))
 
+;; --- joints ------------------------------------------------------------------
+;; A joint's spec is given in world space (anchors, axis) at the moment it's
+;; made, which is what's natural at the REPL. It's turned into the bodies'
+;; local frames once, and the registry keeps that :frame, so a joint made
+;; again later (its body replaced) sits at the same places on the bodies.
+
+(defn- rotate [[x y] c s] [(- (* c x) (* s y)) (+ (* s x) (* c y))])
+
+(defn- joint-id
+  "The joint id for name-or-id, throwing on an unknown name."
+  [w name-or-id]
+  (live! w)
+  (or (c/resolve-id @(:registry w) :joint name-or-id)
+      (throw (ex-info (str "no joint named " name-or-id) {:name name-or-id}))))
+
+(defn- joint-entry
+  "The registry entry for joint id, throwing if it's unknown or stale (as an
+  id the registry has forgotten is)."
+  [w id op]
+  (or (when (== 1 (f/joint-valid id)) (c/entry @(:registry w) :joint id))
+      (check! -1 op {:joint id})))
+
+(defn- attached-joints
+  "[id entry] pairs of the registered joints attached to body id."
+  [reg body]
+  (filterv (fn [[_ j]] (or (= body (:a j)) (= body (:b j)))) (c/entries reg :joint)))
+
+(defn- world->local [{:keys [x y angle]} [px py]]
+  (rotate [(- px x) (- py y)] (Math/cos angle) (- (Math/sin angle))))
+
+(defn- local->world [{:keys [x y angle]} lp]
+  (let [[rx ry] (rotate lp (Math/cos angle) (Math/sin angle))]
+    [(+ x rx) (+ y ry)]))
+
+(defn- joint-frame
+  "A joint spec's anchors, axis and reference angle in the bodies' local
+  frames, from where bodies a and b are now."
+  [w a b {:keys [anchor anchor-a anchor-b local-anchor-a local-anchor-b
+                 axis local-axis reference-angle]}]
+  (let [ta  (transform w a)
+        tb  (transform w b)
+        wa  (or anchor-a anchor [(:x tb) (:y tb)])           ; default: b's origin
+        wb  (or anchor-b anchor wa)
+        [ax ay] (or axis [1 0])]
+    {:local-anchor-a  (or local-anchor-a (world->local ta wa))
+     :local-anchor-b  (or local-anchor-b (world->local tb wb))
+     :local-axis      (or local-axis
+                          (rotate [ax ay] (Math/cos (:angle ta)) (- (Math/sin (:angle ta)))))
+     :reference-angle (or reference-angle (- (:angle tb) (:angle ta)))}))
+
+(defn- params-buffer
+  "A scratch buffer holding the doubles xs, for a <type>-create call."
+  [w xs]
+  (let [buf (:state (:scratch w))]
+    (dorun (map-indexed (fn [i x] (ffi/write buf :double (double x) (* 8 i))) xs))
+    buf))
+
+(defn- prismatic-params
+  [{:keys [spring target limit motor collide-connected?]}
+   {[lax lay] :local-anchor-a [lbx lby] :local-anchor-b [axx axy] :local-axis :keys [reference-angle]}]
+  (let [{:keys [hertz damping] :or {hertz 0 damping 0}} (when (map? spring) spring)
+        [lo hi] (when (vector? limit) limit)
+        {:keys [max-force speed] :or {max-force 0 speed 0}} (when (map? motor) motor)]
+    [lax lay lbx lby axx axy reference-angle (or target 0)
+     (c/flag (map? spring)) hertz damping
+     (c/flag (vector? limit)) (or lo 0) (or hi 0)
+     (c/flag (map? motor)) max-force speed
+     (c/flag collide-connected?)]))
+
+(defn- create-joint!
+  "Makes a joint between body ids a and b from its spec and local frame, and
+  records it. Returns the id."
+  [w joint-name a b frame {:keys [type user-data] :or {user-data 0} :as spec}]
+  (let [id (case type
+             :prismatic (f/prismatic-create (:id w) a b
+                                            (params-buffer w (prismatic-params spec frame))
+                                            (long user-data))
+             (throw (ex-info "unknown joint :type (so far: :prismatic)" {:spec spec})))]
+    (when (zero? id)
+      (throw (ex-info "Box2D couldn't create the joint" {:name joint-name :spec spec})))
+    (swap! (:registry w) c/add-entry :joint id
+           (cond-> {:type type :spec spec :frame frame :a a :b b}
+             joint-name (assoc :name joint-name)))
+    id))
+
+(declare destroy-joint!)
+
+(defn joint!
+  "Joins two bodies and returns the joint id. With a keyword name, an
+  existing joint of that name is replaced. Anchors and axes are world
+  space, taken where the bodies are now.
+
+  :prismatic  body :b slides along an axis fixed in body :a, keeping its
+              angle. {:type :prismatic :a body :b body
+                      :anchor [x y]          ; or :anchor-a / :anchor-b;
+                                             ; default: :b's origin
+                      :axis [x y]            ; the direction it slides, default [1 0]
+                      :spring {:hertz h :damping z}  ; pulls toward :target
+                                             ; (Box2D's springs lose a little
+                                             ; each swing even at :damping 0)
+                      :target t              ; translation the spring pulls to, m
+                      :limit [lower upper]   ; translation limits, m
+                      :motor {:max-force f :speed v}
+                      :collide-connected? b  ; default false
+                      :user-data u64}
+              Translation is measured along the axis from where :b started."
+  ([w spec] (joint! w nil spec))
+  ([w joint-name {:keys [a b] :as spec}]
+   (live! w)
+   (when (and joint-name (not (keyword? joint-name)))
+     (throw (ex-info "joint names are keywords" {:name joint-name})))
+   (let [a (body-id w a)
+         b (body-id w b)]
+     (when-let [old (and joint-name (c/resolve-id @(:registry w) :joint joint-name))]
+       (destroy-joint! w old))
+     (create-joint! w joint-name a b (joint-frame w a b spec) spec))))
+
+(defn- remake-joint!
+  "Makes registry entry j's joint again after body old was replaced by new."
+  [w {:keys [name a b frame spec]} old new]
+  (create-joint! w name (if (= a old) new a) (if (= b old) new b) frame spec))
+
+(defn destroy-joint!
+  "Destroys a joint (by name or id)."
+  [w name-or-id]
+  (let [id (joint-id w name-or-id)]
+    (swap! (:registry w) c/remove-entry :joint id)
+    (check! (f/joint-destroy id) :destroy-joint! {:joint name-or-id})
+    nil))
+
+(defn- prismatic-set! [id what v1 v2 j]
+  (check! (f/prismatic-set id (int what) (double v1) (double v2)) :set-joint! {:joint j}))
+
+(defn set-joint!
+  "Changes a joint's settings while the world runs, and remembers them so a
+  remade joint keeps them. For :prismatic, any of
+    {:spring {:hertz h :damping z} or false, :target t,
+     :limit [lower upper] or false, :motor {:max-force f :speed v} or false,
+     :collide-connected? b}
+  :spring may give just :hertz or :damping."
+  [w name-or-id settings]
+  (let [id (joint-id w name-or-id)
+        {:keys [type]} (joint-entry w id :set-joint!)
+        {:keys [spring target limit motor collide-connected?]} settings]
+    (case type
+      :prismatic
+      (do (when (contains? settings :spring)
+            (prismatic-set! id f/SET-SPRING-ON (c/flag spring) 0 name-or-id)
+            (when (map? spring)
+              (when-let [h (:hertz spring)]   (prismatic-set! id f/SET-SPRING-HERTZ h 0 name-or-id))
+              (when-let [z (:damping spring)] (prismatic-set! id f/SET-SPRING-DAMPING z 0 name-or-id))))
+          (when (some? target) (prismatic-set! id f/SET-TARGET target 0 name-or-id))
+          (when (contains? settings :limit)
+            (prismatic-set! id f/SET-LIMIT-ON (c/flag limit) 0 name-or-id)
+            (when (vector? limit) (prismatic-set! id f/SET-LIMITS (first limit) (second limit) name-or-id)))
+          (when (contains? settings :motor)
+            (prismatic-set! id f/SET-MOTOR-ON (c/flag motor) 0 name-or-id)
+            (when (map? motor)
+              (when-let [v (:speed motor)]     (prismatic-set! id f/SET-MOTOR-SPEED v 0 name-or-id))
+              (when-let [m (:max-force motor)] (prismatic-set! id f/SET-MAX-MOTOR m 0 name-or-id))))))
+    (when (some? collide-connected?)
+      (check! (f/joint-set-collide-connected id (int (c/flag collide-connected?)))
+              :set-joint! {:joint name-or-id}))
+    ;; remember it: merge maps (a partial :spring keeps the other key)
+    (swap! (:registry w) update-in [:entries :joint id :spec]
+           (fn [s] (merge-with (fn [old new] (if (and (map? old) (map? new)) (merge old new) new))
+                               s settings)))
+    nil))
+
+(defn- read-joint-common [w id j]
+  (let [buf (:state (:scratch w))]
+    (check! (f/joint-read id buf) :joint {:joint j})
+    (let [[_ fx fy torque lin ang] (c/read-doubles buf f/JOINT-DOUBLES)]
+      {:force [fx fy] :torque torque :linear-separation lin :angular-separation ang})))
+
+(defn- read-prismatic [w id j]
+  (let [buf (:state (:scratch w))]
+    (check! (f/prismatic-read id buf) :joint {:joint j})
+    (let [[tr sp mf son hz dz tgt lon lo hi mon ms mmf ax ay] (c/read-doubles buf f/PRISMATIC-READ)]
+      {:state    {:translation tr :speed sp :motor-force mf}
+       :settings {:spring (when (== 1.0 son) {:hertz hz :damping dz})
+                  :target tgt
+                  :limit  (when (== 1.0 lon) [lo hi])
+                  :motor  (when (== 1.0 mon) {:max-force mmf :speed ms})
+                  :local-axis [ax ay]}})))
+
+(defn joint-state
+  "A joint's live state. For :prismatic {:translation m :speed m/s
+  :motor-force N}, plus for every joint {:force [fx fy] :torque N·m} (what
+  the joint is doing to hold the bodies together) and how far apart it's
+  being pulled (:linear-separation, :angular-separation)."
+  [w name-or-id]
+  (let [id (joint-id w name-or-id)
+        {:keys [type]} (joint-entry w id :joint-state)]
+    (merge (case type
+             :prismatic (:state (read-prismatic w id name-or-id)))
+           (read-joint-common w id name-or-id))))
+
+(defn- joint-anchors
+  "World positions of a joint's two anchors."
+  [w {:keys [a b frame]}]
+  [(local->world (transform w a) (:local-anchor-a frame))
+   (local->world (transform w b) (:local-anchor-b frame))])
+
+(defn joints
+  "Every joint in w: a vector of {:id :name :type :a :b}, in creation order."
+  [w]
+  (live! w)
+  (mapv (fn [[id j]] {:id id :name (:name j) :type (:type j) :a (:a j) :b (:b j)})
+        (c/entries @(:registry w) :joint)))
+
+(defn joint-info
+  "Everything about one joint as plain data: its spec, the local frame it
+  was made with, the bodies (ids and names), what Box2D says its settings
+  are now, its live state, and its anchors in world space."
+  [w name-or-id]
+  (let [id  (joint-id w name-or-id)
+        {:keys [type a b] :as j} (joint-entry w id :joint-info)
+        reg @(:registry w)]
+    {:id       id
+     :name     (:name j)
+     :type     type
+     :a        a
+     :b        b
+     :a-name   (:name (c/entry reg :body a))
+     :b-name   (:name (c/entry reg :body b))
+     :spec     (:spec j)
+     :frame    (:frame j)
+     :settings (case type :prismatic (:settings (read-prismatic w id name-or-id)))
+     :state    (joint-state w id)
+     :anchors  (joint-anchors w j)}))
+
 ;; --- inspection --------------------------------------------------------------
 
 (defn bodies
@@ -668,7 +920,8 @@
        :mass      mass
        :inertia   inertia
        :awake?    (== 1.0 awake)
-       :contacts  (contacts w id)})))
+       :contacts  (contacts w id)
+       :joints    (mapv first (attached-joints @(:registry w) id))})))
 
 (defn snapshot
   "The whole world as one plain map."
@@ -677,7 +930,8 @@
   {:id        (:id w)
    :gravity   (:gravity w)
    :max-steps (:max-steps w)
-   :bodies    (mapv #(body-info w (:id %)) (bodies w))})
+   :bodies    (mapv #(body-info w (:id %)) (bodies w))
+   :joints    (mapv #(joint-info w (:id %)) (joints w))})
 
 ;; --- debug outlines ----------------------------------------------------------
 ;; Built in Clojure from the registry's shape specs and each body's transform,
@@ -685,8 +939,6 @@
 ;; value to its callbacks, which jolt can't receive; if this gets slow with
 ;; many bodies, the shim can collect those callbacks into a buffer instead and
 ;; this keeps returning the same maps (guide, step 2).
-
-(defn- rotate [[x y] c s] [(- (* c x) (* s y)) (+ (* s x) (* c y))])
 
 (defn- box-points
   "The four corners of a :box shape spec, in world space, for a body at
@@ -712,27 +964,38 @@
       [(== 1.0 awake) (body-type-names (long type-n))])))
 
 (defn debug-shapes
-  "Every shape in w as plain data for drawing, in world units:
-  {:kind :polygon :points [[x y] ...] :center [x y]
-   :body id :name name :shape id :type :static|:kinematic|:dynamic :awake? bool
-   :sensor? bool}.
-  Draw the points as a closed loop. No drawing happens here: the caller
-  (e.g. raylib on the main thread) does that."
+  "Every shape and joint in w as plain data for drawing, in world units.
+  Shapes: {:kind ... :center [x y] :body id :name name :shape id
+           :type :static|:kinematic|:dynamic :awake? bool :sensor? bool} with
+    :kind :polygon  :points [[x y] ...]   (draw as a closed loop)
+    :kind :circle   :at [x y] :radius r
+    :kind :capsule  :points [[x1 y1] [x2 y2]] :radius r
+  Joints: {:kind :segment :points [anchor-a anchor-b] :joint id :name :type}.
+  No drawing happens here: the caller (e.g. raylib on the main thread) does
+  that."
   [w]
   (live! w)
-  (into []
-        (mapcat
-         (fn [[id {body-name :name :keys [spec shapes]}]]
-           (let [{:keys [x y angle]} (transform w id)
-                 [awake? type]       (awake-and-type w id)]
-             (mapv (fn [shape-spec sid]
-                     (cond-> {:body id :name body-name :shape sid
-                              :type type :awake? awake? :center [x y]
-                              :sensor? (boolean (:sensor? shape-spec))}
-                       (:box shape-spec) (assoc :kind :polygon
-                                                :points (box-points shape-spec x y angle))))
-                   (:shapes spec) shapes))))
-        (c/entries @(:registry w) :body)))
+  (let [reg @(:registry w)
+        shape-maps
+        (fn [[id {body-name :name :keys [spec shapes]}]]
+          (let [{:keys [x y angle] :as t} (transform w id)
+                [awake? type]             (awake-and-type w id)]
+            (mapv (fn [{:keys [box circle capsule radius offset] :or {offset [0 0]} :as shape-spec}
+                       sid]
+                    (let [at #(local->world t (mapv + offset %))]
+                      (cond-> {:body id :name body-name :shape sid
+                               :type type :awake? awake? :center [x y]
+                               :sensor? (boolean (:sensor? shape-spec))}
+                        box     (assoc :kind :polygon :points (box-points shape-spec x y angle))
+                        circle  (assoc :kind :circle :at (at [0 0]) :radius circle)
+                        capsule (assoc :kind :capsule :points (mapv at capsule) :radius radius))))
+                  (:shapes spec) shapes)))
+        joint-map
+        (fn [[id j]]
+          {:kind :segment :points (joint-anchors w j) :joint id :name (:name j) :type (:type j)})]
+    (-> []
+        (into (mapcat shape-maps) (c/entries reg :body))
+        (into (map joint-map) (c/entries reg :joint)))))
 
 ;; --- headless simulation -----------------------------------------------------
 

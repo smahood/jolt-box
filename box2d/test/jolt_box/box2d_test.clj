@@ -480,3 +480,120 @@
     (is (thrown-ex-info? #(b2/sensor-overlaps w (first (b2/shapes w :crate))))
         "overlaps of a shape that isn't a sensor")
     (is (= [false true] (mapv :sensor? (b2/debug-shapes w))))))
+
+;; --- step 5: circles, capsules and prismatic joints -----------------------------
+
+(deftest circles-and-capsules
+  (b2/with-world [w]
+    (floor! w)
+    (b2/body! w :ball {:type :dynamic :pos [-2 0] :shapes [{:circle 0.25}]})
+    (b2/body! w :pill {:type :dynamic :pos [2 0] :fixed-rotation? true
+                       :shapes [{:capsule [[-0.5 0] [0.5 0]] :radius 0.2}]})
+    (is (near? (b2/mass w :ball) (* Math/PI 0.0625) 1e-3) "a circle's mass is πr² × density")
+    (b2/simulate w 2.0)
+    (is (near? (:y (b2/transform w :ball)) 1.65 0.01) "rests a radius above the floor")
+    (is (near? (:y (b2/transform w :pill)) 1.7 0.01))
+    (let [by-name (into {} (map (juxt :name identity)) (b2/debug-shapes w))]
+      (is (= :circle (:kind (by-name :ball))))
+      (is (near? 0.25 (:radius (by-name :ball)) 1e-9))
+      (is (= :capsule (:kind (by-name :pill))))
+      (is (points-near? [[1.5 1.7] [2.5 1.7]] (:points (by-name :pill)) 0.01)))
+    (is (thrown-ex-info? #(b2/body! w {:shapes [{:circle 0}]})))
+    (is (thrown-ex-info? #(b2/body! w {:shapes [{:capsule [[0 0] [0 0]] :radius 0.1}]})))))
+
+(defn- slider!
+  "A static post with a 1 kg block on a vertical prismatic joint, in a world
+  without gravity unless one is given."
+  [w spec]
+  (b2/body! w :post {:shapes [{:box [0.1 0.1]}]})
+  (b2/body! w :block {:type :dynamic :pos [0 0] :shapes [{:box [0.5 0.5]}]})
+  (b2/joint! w :slide (merge {:type :prismatic :a :post :b :block :axis [0 1]} spec)))
+
+(deftest prismatic-spring-oscillates-at-its-hertz
+  (b2/with-world [w {:gravity [0 0]}]
+    (slider! w {:spring {:hertz 2.0 :damping 0.0} :target 0.5})
+    (let [samples (b2/simulate w 3.0 {:sample [:block]})
+          period  (b2/period samples :block :y)
+          {:keys [min max]} (b2/extent samples :block :y)]
+      (is (near? period 0.5 0.05) (str "2 Hz is a 0.5 s period, got " period))
+      (is (near? min 0.0 0.02))
+      ;; Box2D's soft-step spring loses ~15% a cycle at 2 Hz even undamped
+      (is (< 0.85 max 1.0) "swings out to nearly twice the target")
+      (is (every? #(near? (get-in % [:block :x]) 0.0 1e-6) samples) "only along the axis"))))
+
+(deftest prismatic-limits-motor-and-settings
+  (testing "limits hold"
+    (b2/with-world [w {:gravity [0 0]}]
+      (slider! w {:spring {:hertz 3 :damping 0} :target 2.0 :limit [-0.2 0.3]})
+      (let [samples (b2/simulate w 2.0 {:sample [:block]})]
+        (is (<= (:max (b2/extent samples :block :y)) 0.31))
+        (is (near? (:translation (b2/joint-state w :slide)) 0.3 0.01)))))
+  (testing "a motor drives it at its speed"
+    (b2/with-world [w {:gravity [0 0]}]
+      (slider! w {:motor {:max-force 1000 :speed 1.5}})
+      (b2/simulate w 0.5)
+      (is (near? (:speed (b2/joint-state w :slide)) 1.5 1e-3))
+      (is (near? (:vy (b2/velocity w :block)) 1.5 1e-3))))
+  (testing "set-joint! changes it live and remembers"
+    (b2/with-world [w {:gravity [0 0]}]
+      (slider! w {:spring {:hertz 2 :damping 0.1}})
+      (b2/set-joint! w :slide {:spring {:hertz 5} :target 0.25 :limit [-1 1]})
+      (let [{:keys [settings spec]} (b2/joint-info w :slide)]
+        (is (near? 5.0 (get-in settings [:spring :hertz]) 1e-6))
+        (is (near? 0.1 (get-in settings [:spring :damping]) 1e-6) "the damping it had")
+        (is (= 0.25 (double (:target settings))))
+        (is (= [-1.0 1.0] (mapv double (:limit settings))))
+        (is (= {:hertz 5 :damping 0.1} (:spring spec)) "the spec remembers the merged spring"))
+      (b2/simulate w 2.0)
+      (is (near? (:translation (b2/joint-state w :slide)) 0.25 0.2))
+      (b2/set-joint! w :slide {:spring false :limit false})
+      (is (nil? (get-in (b2/joint-info w :slide) [:settings :spring])))
+      (is (nil? (get-in (b2/joint-info w :slide) [:settings :limit]))))))
+
+(deftest joint-registry
+  (b2/with-world [w]
+    (b2/body! w :base {:type :dynamic :pos [0 1] :shapes [{:box [0.5 0.2]}]})
+    (b2/body! w :bowl {:type :dynamic :pos [0 0.4] :shapes [{:box [0.5 0.3]}]})
+    (let [j (b2/joint! w :spring {:type :prismatic :a :base :b :bowl :axis [0 -1]
+                                  :spring {:hertz 4 :damping 0.3}})]
+      (is (= [{:id j :name :spring :type :prismatic
+               :a (:id (b2/body-info w :base)) :b (:id (b2/body-info w :bowl))}]
+             (b2/joints w)))
+      (let [info (b2/joint-info w :spring)]
+        (is (plain? info))
+        (is (= [:base :bowl] [(:a-name info) (:b-name info)]))
+        (is (points-near? [[0 0.4] [0 0.4]] (:anchors info) 1e-6) "anchored at :b's origin")
+        (is (points-near? [[0 -0.6]] [(get-in info [:frame :local-anchor-a])] 1e-6)
+            "kept in :a's own frame"))
+      (is (= [j] (:joints (b2/body-info w :bowl))))
+      (testing "re-evaluating a named joint replaces it"
+        (let [j2 (b2/joint! w :spring {:type :prismatic :a :base :b :bowl :axis [0 -1]})]
+          (is (not= j j2))
+          (is (= 1 (count (b2/joints w))))
+          (is (thrown-ex-info? #(b2/joint-state w j)))))
+      (testing "re-evaluating a body remakes its joints on the new body"
+        (b2/set-joint! w :spring {:spring {:hertz 6 :damping 0.2}})
+        (let [old-bowl (:id (b2/body-info w :bowl))
+              new-bowl (b2/body! w :bowl {:type :dynamic :pos [0 0.4] :shapes [{:box [0.4 0.3]}]})
+              info     (b2/joint-info w :spring)]
+          (is (not= old-bowl new-bowl))
+          (is (= new-bowl (:b info)))
+          (is (= :bowl (:b-name info)))
+          (is (near? 6.0 (get-in info [:settings :spring :hertz]) 1e-6) "with the changed settings")
+          (is (= [(:id info)] (:joints (b2/body-info w :bowl))))))
+      (testing "destroying a body takes its joints"
+        (b2/destroy-body! w :base)
+        (is (= [] (b2/joints w)))
+        (is (thrown-ex-info? #(b2/joint-info w :spring)))))))
+
+(deftest joint-odds-and-ends
+  (b2/with-world [w {:gravity [0 0]}]
+    (slider! w {})
+    (is (some #(= [:segment :slide] [(:kind %) (:name %)]) (b2/debug-shapes w)))
+    (is (thrown-ex-info? #(b2/joint! w {:type :wobble :a :post :b :block})))
+    (is (thrown-ex-info? #(b2/joint! w {:type :prismatic :a :post :b :nobody})))
+    (is (plain? (b2/snapshot w)))
+    (is (= [:slide] (mapv :name (:joints (b2/snapshot w)))))
+    (b2/destroy-joint! w :slide)
+    (is (thrown-ex-info? #(b2/set-joint! w :slide {:target 1})))
+    (is (= [] (b2/joints w)))))
