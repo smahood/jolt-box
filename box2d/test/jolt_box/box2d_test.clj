@@ -597,3 +597,141 @@
     (b2/destroy-joint! w :slide)
     (is (thrown-ex-info? #(b2/set-joint! w :slide {:target 1})))
     (is (= [] (b2/joints w)))))
+
+;; --- step 6: revolute and distance joints, filters, read-bodies ---------------
+
+(defn- hinge!
+  "A static post with a 1 m bar hinged at its left end, at the post."
+  [w spec]
+  (b2/body! w :post {:shapes [{:box [0.05 0.05]}]})
+  (b2/body! w :bar {:type :dynamic :pos [0.5 0] :shapes [{:box [0.5 0.05]}]})
+  (b2/joint! w :hinge (merge {:type :revolute :a :post :b :bar :anchor [0 0]} spec)))
+
+(deftest revolute-springs-limits-and-motors
+  (testing "a spring brings it back to its target"
+    (b2/with-world [w {:gravity [0 0]}]
+      (hinge! w {:spring {:hertz 3 :damping 0.5}})
+      (b2/set-angular-velocity! w :bar 4.0)                    ; knock it
+      (let [samples (b2/simulate w 3.0 {:sample [:bar]})]
+        ;; ~4 rad/s against a 3 Hz spring (ω ≈ 19), damped: a small swing
+        (is (< 0.05 (:max (b2/extent samples :bar :angle))) "it swung")
+        (is (some? (b2/settled-at samples :bar)) "and settled")
+        (is (near? (:angle (b2/joint-state w :hinge)) 0.0 0.01)))
+      (b2/set-joint! w :hinge {:target 0.5})
+      (b2/simulate w 3.0)
+      (is (near? (:angle (b2/joint-state w :hinge)) 0.5 0.01) "and to a new target")))
+  (testing "a limit stops it"
+    (b2/with-world [w]                                          ; falls under gravity
+      (hinge! w {:limit [-0.3 0.3]})
+      (b2/simulate w 2.0)
+      (is (near? (:angle (b2/joint-state w :hinge)) 0.3 0.01) "y-down: falling turns it +")
+      (is (near? (:angle (b2/transform w :bar)) 0.3 0.01))))
+  (testing "a motor turns it"
+    (b2/with-world [w {:gravity [0 0]}]
+      (hinge! w {:motor {:max-torque 100 :speed 2.0}})
+      (b2/simulate w 0.5)
+      (is (near? (:speed (b2/joint-state w :hinge)) 2.0 1e-3))
+      (is (near? (:angle (b2/joint-state w :hinge)) 1.0 0.05))))
+  (testing "it stays pinned at the anchor"
+    (b2/with-world [w]
+      (hinge! w {})
+      (b2/simulate w 1.0)
+      (let [[[ax ay] [bx by]] (:anchors (b2/joint-info w :hinge))]
+        (is (near? ax bx 0.01))
+        (is (near? ay by 0.01)))
+      (is (nil? (get-in (b2/joint-info w :hinge) [:settings :motor])) "no motor unless asked"))))
+
+(deftest distance-joints
+  (testing "rigid: a pendulum keeps its length"
+    (b2/with-world [w]
+      (b2/body! w :pin {:shapes [{:box [0.05 0.05]}]})
+      (b2/body! w :bob {:type :dynamic :pos [1 0] :shapes [{:circle 0.1}]})
+      (b2/joint! w :rod {:type :distance :a :pin :b :bob})
+      (is (near? 1.0 (get-in (b2/joint-info w :rod) [:settings :length]) 1e-6)
+          "the length defaults to how far apart they are")
+      (let [samples (b2/simulate w 2.0 {:sample [:bob]})]
+        (is (every? (fn [{{:keys [x y]} :bob}] (near? (Math/sqrt (+ (* x x) (* y y))) 1.0 0.01))
+                    samples))
+        (is (> (:max (b2/extent samples :bob :y)) 0.9) "and swings down"))))
+  (testing "springy, with a new length and a range"
+    (b2/with-world [w {:gravity [0 0]}]
+      (b2/body! w :pin {:shapes [{:box [0.05 0.05]}]})
+      (b2/body! w :bob {:type :dynamic :pos [0 1] :shapes [{:circle 0.1}]})
+      (b2/joint! w :leash {:type :distance :a :pin :b :bob :spring {:hertz 4 :damping 0.7}})
+      (b2/set-joint! w :leash {:length 2.0})
+      (b2/simulate w 2.0)
+      (is (near? (:length (b2/joint-state w :leash)) 2.0 0.02) "the spring pulls it out")
+      (b2/set-joint! w :leash {:limit [0.5 1.5]})
+      (b2/simulate w 1.0)
+      (is (<= (:length (b2/joint-state w :leash)) 1.51) "the range holds it in")
+      (is (= [0.5 1.5] (mapv double (get-in (b2/joint-info w :leash) [:settings :limit]))))))
+  (testing "explicit anchors"
+    (b2/with-world [w {:gravity [0 0]}]
+      (b2/body! w :a {:type :dynamic :pos [0 0] :shapes [{:box [0.5 0.5]}]})
+      (b2/body! w :b {:type :dynamic :pos [3 0] :shapes [{:box [0.5 0.5]}]})
+      (b2/joint! w :j {:type :distance :a :a :b :b :anchor-a [0.5 0] :anchor-b [2.5 0]})
+      (is (near? 2.0 (get-in (b2/joint-info w :j) [:settings :length]) 1e-6))
+      (is (points-near? [[0.5 0] [2.5 0]] (:anchors (b2/joint-info w :j)) 1e-6)))))
+
+(deftest joints-of-every-type-are-remade-with-their-body
+  (b2/with-world [w {:gravity [0 0]}]
+    (hinge! w {:spring {:hertz 2 :damping 0.3}})
+    (b2/body! w :bob {:type :dynamic :pos [2 0] :shapes [{:circle 0.1}]})
+    (b2/joint! w :rod {:type :distance :a :bar :b :bob :spring {:hertz 1 :damping 0.1}})
+    (b2/body! w :bar {:type :dynamic :pos [0.5 0] :shapes [{:box [0.5 0.08]}]})
+    (is (= #{[:hinge :revolute] [:rod :distance]} (set (map (juxt :name :type) (b2/joints w)))))
+    (is (= (:id (b2/body-info w :bar)) (:b (b2/joint-info w :hinge))))
+    (is (= (:id (b2/body-info w :bar)) (:a (b2/joint-info w :rod))))
+    (is (plain? (b2/snapshot w)))))
+
+(deftest collision-filters
+  (testing "the same negative group passes through itself, but not the floor"
+    (b2/with-world [w]
+      (floor! w)
+      (b2/body! w :low {:type :dynamic :pos [0 1] :shapes [{:box [0.5 0.3] :group -1}]})
+      (b2/body! w :high {:type :dynamic :pos [0 0] :shapes [{:box [0.5 0.3] :group -1}]})
+      (b2/simulate w 2.0)
+      (is (near? (:y (b2/transform w :low)) 1.6 0.01))
+      (is (near? (:y (b2/transform w :high)) 1.6 0.01) "fell into the other one, onto the floor")))
+  (testing "different groups (or none) collide"
+    (b2/with-world [w]
+      (floor! w)
+      (b2/body! w :low {:type :dynamic :pos [0 1] :shapes [{:box [0.5 0.3] :group -1}]})
+      (b2/body! w :high {:type :dynamic :pos [0 0] :shapes [{:box [0.5 0.3] :group -2}]})
+      (b2/simulate w 2.0)
+      (is (near? (:y (b2/transform w :high)) 1.0 0.01) "stacked")))
+  (testing "a mask that leaves out the floor's category falls through it"
+    (b2/with-world [w]
+      (floor! w)                                               ; category 1
+      (b2/body! w :ghost {:type :dynamic :shapes [{:box [0.2 0.2] :category 2 :mask 2}]})
+      (b2/simulate w 1.5)
+      (is (> (:y (b2/transform w :ghost)) 3)))))
+
+(deftest read-bodies-in-one-go
+  (b2/with-world [w {:gravity [0 0]}]
+    (b2/body! w :a {:type :dynamic :pos [1 2] :shapes [{:box [0.1 0.1]}]})
+    (b2/body! w :b {:type :dynamic :pos [3 4] :angle 0.5 :shapes [{:box [0.1 0.1]}]})
+    (b2/set-velocity! w :b [5 6])
+    (let [v (b2/read-bodies w [:a :b])]
+      (is (= 12 (count v)))
+      (is (= [1.0 2.0 0.0 0.0 0.0 0.0] (subvec v 0 6)))
+      (is (near? (nth v 8) 0.5 1e-6))
+      (is (= [5.0 6.0] (subvec v 9 11))))))
+
+;; --- regressions ------------------------------------------------------------
+
+(deftest many-joints-in-many-worlds
+  ;; Joint params and reads go through a scratch buffer the shim writes into
+  ;; blind. Once it was too small (8 doubles for 18), which quietly corrupted
+  ;; the heap until something crashed several worlds later.
+  (dotimes [_ 30]
+    (b2/with-world [w]
+      (slider! w {:spring {:hertz 2 :damping 0.1} :limit [-1 1] :motor {:max-force 1 :speed 0}})
+      (b2/body! w :bob {:type :dynamic :pos [3 0] :shapes [{:circle 0.1}]})
+      (b2/joint! w :rod {:type :distance :a :block :b :bob :spring {:hertz 1 :damping 0}
+                         :limit [0.5 4] :motor {:max-force 1 :speed 0}})
+      (b2/joint! w :hinge {:type :revolute :a :post :b :bob :anchor [1 0] :spring {:hertz 1 :damping 0}
+                           :limit [-1 1] :motor {:max-torque 1 :speed 0}})
+      (b2/simulate w 0.2)
+      (dorun (map #(b2/joint-info w (:id %)) (b2/joints w)))))
+  (is true "got here without the process dying"))

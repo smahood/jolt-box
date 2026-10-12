@@ -45,7 +45,7 @@ jolt test     # headless tests
 ;=> [{:x ~0.0 :y ~1.4 :angle ~0.0} 1.0]   resting on the floor after a second
 ```
 
-## API (box2d, steps 0–5)
+## API (box2d, steps 0–6)
 
 Meters, kilograms, seconds, radians. Anywhere a body id goes, a keyword
 name works too. Re-evaluating a named `body!` replaces the old body.
@@ -56,9 +56,10 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(destroy! w)`, `(with-world [w opts] ...)` | release it; `with-world` does so in `finally` |
 | `(step! w dt)`, `(step! w dt substeps)` | a raw step (4 substeps by default) |
 | `(step-fixed! w frame-dt)` | fixed 1/60 s steps, at most `:max-steps` per call; returns alpha |
-| `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r :contact-events? b :hit-events? b :sensor? b :sensor-events? b}]}` → id. Shapes are `{:box [hw hh]}`, `{:circle r}` or `{:capsule [[x1 y1] [x2 y2]] :radius r}`. A sensor only sees shapes with `:sensor-events? true`. Re-evaluating a named body remakes its joints |
+| `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r :contact-events? b :hit-events? b :sensor? b :sensor-events? b}]}` → id. Shapes are `{:box [hw hh]}`, `{:circle r}` or `{:capsule [[x1 y1] [x2 y2]] :radius r}`, and take `:group :category :mask` for collision filtering (same negative group never collides). A sensor only sees shapes with `:sensor-events? true`. Re-evaluating a named body remakes its joints |
 | `(destroy-body! w body)` | |
 | `(transform w body)`, `(velocity w body)` | `{:x :y :angle}`, `{:vx :vy :w}` |
+| `(read-bodies w bodies)` | `[x y angle vx vy w ...]` for many bodies at once |
 | `(impulse! w body [ix iy])`, `(impulse! w body [ix iy] [px py])` | a change in momentum, at the center or a world point |
 | `(force! w body [fx fy])`, `(force! w body [fx fy] [px py])` | a push for the next step |
 | `(set-velocity! w body [vx vy])`, `(set-angular-velocity! w body av)` | |
@@ -75,8 +76,10 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(sensor-events w)` | `{:begin [{:sensor-shape :sensor-body :sensor-name :sensor-user :visitor-shape :visitor-body :visitor-name :visitor-user}] :end [..] :dropped n}`, everything since the last call |
 | `(sensor-overlaps w sensor-shape)` | `[{:shape :body :name :user}]` overlapping now (no lag) |
 | `(joint! w name? {:type :prismatic :a body :b body :anchor [x y] :axis [x y] :spring {:hertz :damping} :target t :limit [lo hi] :motor {:max-force :speed} :collide-connected? b :user-data n})` | → joint id. Anchors and axis in world space, where the bodies are now |
-| `(set-joint! w joint {:spring {..}\|false :target t :limit [lo hi]\|false :motor {..}\|false :collide-connected? b})` | change it live (remembered if the joint is remade) |
-| `(joint-state w joint)` | `{:translation :speed :motor-force :force [fx fy] :torque :linear-separation :angular-separation}` |
+| `(joint! w name? {:type :revolute :a :b :anchor [x y] :spring {..} :target rad :limit [lo hi] :motor {:max-torque :speed}})` | a hinge |
+| `(joint! w name? {:type :distance :a :b :anchor-a [x y] :anchor-b [x y] :length m :spring {..} :limit [min max] :motor {:max-force :speed}})` | rigid unless it has a `:spring`; anchors default to the bodies' origins, length to how far apart they are |
+| `(set-joint! w joint {:spring {..}\|false :target t :length m :limit [lo hi]\|false :motor {..}\|false :collide-connected? b})` | change it live (remembered if the joint is remade) |
+| `(joint-state w joint)` | prismatic `{:translation :speed :motor-force}`, revolute `{:angle :speed :motor-torque}`, distance `{:length :motor-force}`, plus `{:force [fx fy] :torque :linear-separation :angular-separation}` |
 | `(joints w)`, `(joint-info w joint)`, `(destroy-joint! w joint)` | |
 | `(bodies w)`, `(body-info w body)`, `(snapshot w)` | inspection, as plain data |
 | `(debug-shapes w)` | shapes (`:kind :polygon :points`, `:circle :at :radius`, `:capsule :points :radius`, with `:center :body :name :shape :type :awake? :sensor?`) and joints (`:kind :segment :points [a b] :joint :name`), for drawing outlines |

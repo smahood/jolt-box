@@ -4,6 +4,7 @@
 
 #include <box2d/box2d.h>
 #include <math.h>
+#include <stdio.h>
 
 /* b2MakeRot uses a fast approximation that is off by up to ~1e-3 rad, so an
  * angle set from the REPL wouldn't read back as itself. Exact is cheap here. */
@@ -14,8 +15,19 @@ static b2Rot jb2_rot(double angle)
 
 /* --- worlds --------------------------------------------------------------- */
 
+/* Box2D reports a failed assert with printf, which is lost if the process
+ * then stops; say it on stderr, flushed, so it can always be seen. Release
+ * builds (-DNDEBUG) compile Box2D's asserts out entirely. */
+static int jb2_assert(const char *condition, const char *file, int line)
+{
+	fprintf(stderr, "[jolt-box] BOX2D ASSERTION: %s, %s, line %d\n", condition, file, line);
+	fflush(stderr);
+	return 1; /* stop, as Box2D would */
+}
+
 uint32_t jb2_world_create(double gx, double gy, double hit_threshold)
 {
+	b2SetAssertFcn(jb2_assert);
 	b2WorldDef def = b2DefaultWorldDef();
 	def.gravity = (b2Vec2){ (float)gx, (float)gy };
 	if (hit_threshold >= 0.0) def.hitEventThreshold = (float)hit_threshold;
@@ -323,6 +335,14 @@ int jb2_shape_enable_hit_events(uint64_t shape, int enable)
 	return JB2_OK;
 }
 
+int jb2_shape_set_filter(uint64_t shape, uint64_t category, uint64_t mask, int group)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2Filter filter = { category, mask, group };
+	b2Shape_SetFilter(b2LoadShapeId(shape), filter);
+	return JB2_OK;
+}
+
 /* --- contact events ------------------------------------------------------- */
 
 static void jb2_event_ids(b2ShapeId a, b2ShapeId b, uint64_t *ids)
@@ -552,5 +572,140 @@ int jb2_prismatic_read(uint64_t joint, double *out)
 	out[12] = b2PrismaticJoint_GetMaxMotorForce(id);
 	out[13] = axis.x;
 	out[14] = axis.y;
+	return JB2_OK;
+}
+
+uint64_t jb2_revolute_create(uint32_t world, uint64_t body_a, uint64_t body_b,
+                             const double *p, uint64_t user_data)
+{
+	if (!jb2_world_is_valid(world) || !jb2_body_is_valid(body_a) || !jb2_body_is_valid(body_b))
+		return 0;
+	b2RevoluteJointDef def = b2DefaultRevoluteJointDef();
+	def.bodyIdA = b2LoadBodyId(body_a);
+	def.bodyIdB = b2LoadBodyId(body_b);
+	def.localAnchorA = (b2Vec2){ (float)p[0], (float)p[1] };
+	def.localAnchorB = (b2Vec2){ (float)p[2], (float)p[3] };
+	def.referenceAngle = (float)p[4];
+	def.targetAngle = (float)p[5];
+	def.enableSpring = p[6] != 0.0;
+	def.hertz = (float)p[7];
+	def.dampingRatio = (float)p[8];
+	def.enableLimit = p[9] != 0.0;
+	def.lowerAngle = (float)p[10];
+	def.upperAngle = (float)p[11];
+	def.enableMotor = p[12] != 0.0;
+	def.maxMotorTorque = (float)p[13];
+	def.motorSpeed = (float)p[14];
+	def.collideConnected = p[15] != 0.0;
+	def.userData = (void*)(uintptr_t)user_data;
+	return b2StoreJointId(b2CreateRevoluteJoint(b2LoadWorldId(world), &def));
+}
+
+int jb2_revolute_set(uint64_t joint, int what, double v1, double v2)
+{
+	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
+	b2JointId id = b2LoadJointId(joint);
+	if (b2Joint_GetType(id) != b2_revoluteJoint) return JB2_BAD_ID;
+	switch (what)
+	{
+		case JB2_SET_SPRING_ON: b2RevoluteJoint_EnableSpring(id, v1 != 0.0); break;
+		case JB2_SET_SPRING_HERTZ: b2RevoluteJoint_SetSpringHertz(id, (float)v1); break;
+		case JB2_SET_SPRING_DAMPING: b2RevoluteJoint_SetSpringDampingRatio(id, (float)v1); break;
+		case JB2_SET_TARGET: b2RevoluteJoint_SetTargetAngle(id, (float)v1); break;
+		case JB2_SET_LIMIT_ON: b2RevoluteJoint_EnableLimit(id, v1 != 0.0); break;
+		case JB2_SET_LIMITS: b2RevoluteJoint_SetLimits(id, (float)v1, (float)v2); break;
+		case JB2_SET_MOTOR_ON: b2RevoluteJoint_EnableMotor(id, v1 != 0.0); break;
+		case JB2_SET_MOTOR_SPEED: b2RevoluteJoint_SetMotorSpeed(id, (float)v1); break;
+		case JB2_SET_MAX_MOTOR: b2RevoluteJoint_SetMaxMotorTorque(id, (float)v1); break;
+		default: return JB2_BAD_ID;
+	}
+	b2Joint_WakeBodies(id);
+	return JB2_OK;
+}
+
+int jb2_revolute_read(uint64_t joint, double *out)
+{
+	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
+	b2JointId id = b2LoadJointId(joint);
+	if (b2Joint_GetType(id) != b2_revoluteJoint) return JB2_BAD_ID;
+	out[0] = b2RevoluteJoint_GetAngle(id);
+	out[1] = b2RevoluteJoint_GetMotorTorque(id);
+	out[2] = b2RevoluteJoint_IsSpringEnabled(id) ? 1.0 : 0.0;
+	out[3] = b2RevoluteJoint_GetSpringHertz(id);
+	out[4] = b2RevoluteJoint_GetSpringDampingRatio(id);
+	out[5] = b2RevoluteJoint_GetTargetAngle(id);
+	out[6] = b2RevoluteJoint_IsLimitEnabled(id) ? 1.0 : 0.0;
+	out[7] = b2RevoluteJoint_GetLowerLimit(id);
+	out[8] = b2RevoluteJoint_GetUpperLimit(id);
+	out[9] = b2RevoluteJoint_IsMotorEnabled(id) ? 1.0 : 0.0;
+	out[10] = b2RevoluteJoint_GetMotorSpeed(id);
+	out[11] = b2RevoluteJoint_GetMaxMotorTorque(id);
+	return JB2_OK;
+}
+
+uint64_t jb2_distance_create(uint32_t world, uint64_t body_a, uint64_t body_b,
+                             const double *p, uint64_t user_data)
+{
+	if (!jb2_world_is_valid(world) || !jb2_body_is_valid(body_a) || !jb2_body_is_valid(body_b))
+		return 0;
+	b2DistanceJointDef def = b2DefaultDistanceJointDef();
+	def.bodyIdA = b2LoadBodyId(body_a);
+	def.bodyIdB = b2LoadBodyId(body_b);
+	def.localAnchorA = (b2Vec2){ (float)p[0], (float)p[1] };
+	def.localAnchorB = (b2Vec2){ (float)p[2], (float)p[3] };
+	def.length = (float)p[4];
+	def.enableSpring = p[5] != 0.0;
+	def.hertz = (float)p[6];
+	def.dampingRatio = (float)p[7];
+	def.enableLimit = p[8] != 0.0;
+	def.minLength = (float)p[9];
+	def.maxLength = (float)p[10];
+	def.enableMotor = p[11] != 0.0;
+	def.maxMotorForce = (float)p[12];
+	def.motorSpeed = (float)p[13];
+	def.collideConnected = p[14] != 0.0;
+	def.userData = (void*)(uintptr_t)user_data;
+	return b2StoreJointId(b2CreateDistanceJoint(b2LoadWorldId(world), &def));
+}
+
+int jb2_distance_set(uint64_t joint, int what, double v1, double v2)
+{
+	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
+	b2JointId id = b2LoadJointId(joint);
+	if (b2Joint_GetType(id) != b2_distanceJoint) return JB2_BAD_ID;
+	switch (what)
+	{
+		case JB2_SET_SPRING_ON: b2DistanceJoint_EnableSpring(id, v1 != 0.0); break;
+		case JB2_SET_SPRING_HERTZ: b2DistanceJoint_SetSpringHertz(id, (float)v1); break;
+		case JB2_SET_SPRING_DAMPING: b2DistanceJoint_SetSpringDampingRatio(id, (float)v1); break;
+		case JB2_SET_LENGTH: b2DistanceJoint_SetLength(id, (float)v1); break;
+		case JB2_SET_LIMIT_ON: b2DistanceJoint_EnableLimit(id, v1 != 0.0); break;
+		case JB2_SET_LIMITS: b2DistanceJoint_SetLengthRange(id, (float)v1, (float)v2); break;
+		case JB2_SET_MOTOR_ON: b2DistanceJoint_EnableMotor(id, v1 != 0.0); break;
+		case JB2_SET_MOTOR_SPEED: b2DistanceJoint_SetMotorSpeed(id, (float)v1); break;
+		case JB2_SET_MAX_MOTOR: b2DistanceJoint_SetMaxMotorForce(id, (float)v1); break;
+		default: return JB2_BAD_ID;
+	}
+	b2Joint_WakeBodies(id);
+	return JB2_OK;
+}
+
+int jb2_distance_read(uint64_t joint, double *out)
+{
+	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
+	b2JointId id = b2LoadJointId(joint);
+	if (b2Joint_GetType(id) != b2_distanceJoint) return JB2_BAD_ID;
+	out[0] = b2DistanceJoint_GetCurrentLength(id);
+	out[1] = b2DistanceJoint_GetMotorForce(id);
+	out[2] = b2DistanceJoint_GetLength(id);
+	out[3] = b2DistanceJoint_IsSpringEnabled(id) ? 1.0 : 0.0;
+	out[4] = b2DistanceJoint_GetSpringHertz(id);
+	out[5] = b2DistanceJoint_GetSpringDampingRatio(id);
+	out[6] = b2DistanceJoint_IsLimitEnabled(id) ? 1.0 : 0.0;
+	out[7] = b2DistanceJoint_GetMinLength(id);
+	out[8] = b2DistanceJoint_GetMaxLength(id);
+	out[9] = b2DistanceJoint_IsMotorEnabled(id) ? 1.0 : 0.0;
+	out[10] = b2DistanceJoint_GetMotorSpeed(id);
+	out[11] = b2DistanceJoint_GetMaxMotorForce(id);
 	return JB2_OK;
 }

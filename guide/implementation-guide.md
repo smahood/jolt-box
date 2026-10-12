@@ -707,7 +707,61 @@ the floor, so the hop comes out of the physics.
 - in the game: a longer charge gives a higher hop; the spring settings are
   live-tunable
 
-### Step 6: neck, head weight and wobble
+### Step 6: neck, head weight and wobble ✅ done
+
+*Two library bugs found and fixed:*
+- **A heap overrun since Step 5.** The per-world scratch buffer held 8
+  doubles, but joint params (up to 18) and joint reads (up to 15) were
+  written into it. It corrupted the heap silently and crashed the process
+  several worlds later (seen as exit 133 in a tuning sweep). The buffer now
+  holds 32 doubles, and `state-buf` throws `ex-info` before anything bigger
+  can be written. A regression test makes many joints in many worlds.
+- **Box2D's asserts were never off.** They're compiled in unless `NDEBUG` is
+  defined, so the build now passes `-DNDEBUG` as Step 0 intended. The shim
+  also installs an assert handler that reports on stderr, flushed, for
+  anyone who builds without it to debug Box2D.
+
+*What changed while building it:*
+- `:revolute` and `:distance` joints, each with its full set of shim
+  functions. Joints are now driven by a per-type table (`joint-kinds`:
+  create, set, read, params, motor key), so adding a type means one entry.
+  `set-joint!` takes `:target` (prismatic m, revolute radians) and `:length`
+  (distance). Revolute `:speed` is computed from the bodies' spins (Box2D
+  has no getter).
+- **Collision filters** on shape specs: `:group` (same negative group never
+  collides: the parts of one character), `:category`, `:mask`. Set with
+  `b2Shape_SetFilter` after the shape is made, so the `add_*` signatures
+  stayed put.
+- `read-bodies`, a Clojure loop for now (§4.1).
+
+*In the game (all found by measuring):*
+- The toilet is base, bowl, a neck of a slider segment (prismatic: Up/Down
+  raise it out of the bowl like a periscope, up to 80 px) and three hinged
+  segments, and a circle head on a hinge. All in collision group -1.
+- **Box2D sizes a hinge spring by the two bodies it joins**: stiffness =
+  their effective inertia × (2π·hertz)². With feather-light segments under a
+  heavy head, a fixed hertz can't hold the head up; at 0.02 kg segments and
+  5 Hz the neck folded over at rest. So the neck's hertz is *derived*:
+  `neck-hertz` works back from `k = stiffness × m_head × g × lever`, and the
+  setting is `:neck-stiffness`, how many times stronger than gravity the neck
+  is (default 5). Any head weight stays upright, and the wobble stays slow
+  because the whole head swings on the neck.
+- Segments are 0.08 kg (0.02 was too light for the solver), with the bowl
+  lighter so the parts above the jump spring still weigh 0.88 kg.
+- **Stopping and starting the hop moves the whole toilet's sideways speed,
+  keeping each part's speed relative to the base** (`shift-sideways!`).
+  Stopping only the base and bowl on landing whipped the neck over.
+- Neck damping 0.4: a ~0.5 rad wobble after a hop that settles in about
+  half a second. At 0.15 it flopped about ±1.7 rad.
+- The jump spring went to 16 Hz to make up for what the neck soaks up:
+  hops are 50–52 px up and 134–141 px along again.
+- **Head weight is the trade-off:** at 1 kg the toilet weighs 1.83 kg, hops
+  34 px instead of 52, and breaks the dirt wall in one hop instead of two.
+- The editor has sliders for head weight (0.05–2 kg) and neck stiffness
+  (1–8; below ~1.5 the head flops over). They reach the sim each frame as
+  `:tuning`, and `physics/tune!` only applies what changed.
+- Known quirk: right after some landings the toilet lifts 1–2 px for a
+  few frames as the head's momentum settles into the neck's slider.
 
 *Library additions*
 - `:revolute` joints: `:spring`, `:limit [lo hi]` angles, `:motor`,

@@ -43,6 +43,12 @@
   they're counted in :dropped instead."
   4096)
 
+(def ^:private STATE-DOUBLES
+  "How many doubles the :state scratch buffer holds: enough for the biggest
+  joint params or read (18). The shim writes straight into it, so anything
+  bigger must be checked against this first (see state-buf)."
+  32)
+
 (def ^:private no-events {:begin [] :end [] :hit [] :dropped 0})
 (def ^:private no-sensor-events {:begin [] :end [] :dropped 0})
 
@@ -85,7 +91,7 @@
      (when (zero? id)
        (throw (ex-info "Box2D couldn't create a world (too many worlds?)" {:gravity gravity})))
      (->World id gravity (atom true) (atom c/empty-registry)
-              {:state (ffi/alloc 64)                                   ; one body's numbers
+              {:state (ffi/alloc (* 8 STATE-DOUBLES))                  ; one body's or joint's numbers
                :ids   (ffi/alloc (* 8 f/MAX-CONTACTS))                 ; contact body ids
                :data  (ffi/alloc (* 8 f/CONTACT-DOUBLES f/MAX-CONTACTS))
                :ev-ids  (ffi/alloc (* 8 f/EVENT-IDS EVENT-CAP))             ; contact events
@@ -157,7 +163,7 @@
   "Adds one shape spec to body id. Returns the shape id, or nil if Box2D
   rejected it."
   [id {:keys [box circle capsule radius offset angle density friction restitution
-              contact-events? hit-events? sensor? sensor-events?]
+              contact-events? hit-events? sensor? sensor-events? group category mask]
        :or   {offset [0 0] angle 0 friction 0.6 restitution 0.0}
        :as   shape}]
   (let [[ox oy] offset
@@ -184,7 +190,11 @@
                                             flags))
               :else (throw (ex-info "unknown shape kind: use :box, :circle or :capsule"
                                     {:shape shape})))]
-    (when-not (zero? sid) sid)))
+    (when-not (zero? sid)
+      (when (or group category mask)
+        ;; Box2D's defaults: category 1, every bit of the mask (-1), group 0
+        (f/shape-set-filter sid (long (or category 1)) (long (or mask -1)) (int (or group 0))))
+      sid)))
 
 (declare destroy-body! attached-joints remake-joint!)
 
@@ -206,14 +216,20 @@
                        ;; or {:capsule [[x1 y1] [x2 y2]] :radius r :offset [x y]}
                        :density d :friction f :restitution r
                        :contact-events? b :hit-events? b
-                       :sensor? b :sensor-events? b}]
+                       :sensor? b :sensor-events? b
+                       :group g :category bits :mask bits}]
                      Contact (begin/end touching) and hit events are off by
                      default; they're reported when either shape asks.
                      A :sensor? shape detects overlaps without colliding,
                      and weighs nothing unless given a :density. It only
                      sees shapes with :sensor-events? true (static ones
                      included), so turn that on for whatever it should
-                     notice."
+                     notice.
+                     Collision filtering: shapes in the same negative
+                     :group never collide (e.g. the parts of one character),
+                     the same positive group always do. Otherwise two shapes
+                     collide when each one's :category bits are in the
+                     other's :mask (defaults: category 1, mask all)."
   ([w spec] (body! w nil spec))
   ([w body-name {:keys [type pos angle fixed-rotation? awake? user-data shapes]
                  :or   {type :static pos [0 0] angle 0 awake? true user-data 0}
@@ -282,6 +298,16 @@
   [w name-or-id]
   (let [[x y a vx vy av] (read-state w name-or-id)]
     {:x x :y y :angle a :vx vx :vy vy :w av}))
+
+;; Clojure for now: one read per body. If many bodies a frame shows up in the
+;; dev panel, this becomes a single shim call writing them all into one buffer
+;; (guide §4.1), with the same result.
+(defn read-bodies
+  "Position and velocity of many bodies at once, as one flat vector:
+  [x y angle vx vy w, x y angle vx vy w, ...] in the order given."
+  [w names-or-ids]
+  (live! w)
+  (into [] (mapcat #(read-state w %)) names-or-ids))
 
 ;; --- moving bodies -----------------------------------------------------------
 
@@ -693,49 +719,136 @@
     [(+ x rx) (+ y ry)]))
 
 (defn- joint-frame
-  "A joint spec's anchors, axis and reference angle in the bodies' local
-  frames, from where bodies a and b are now."
-  [w a b {:keys [anchor anchor-a anchor-b local-anchor-a local-anchor-b
-                 axis local-axis reference-angle]}]
+  "A joint spec's anchors, axis, reference angle (and for :distance, length)
+  in the bodies' local frames, from where bodies a and b are now."
+  [w a b {:keys [type anchor anchor-a anchor-b local-anchor-a local-anchor-b
+                 axis local-axis reference-angle length]}]
   (let [ta  (transform w a)
         tb  (transform w b)
-        wa  (or anchor-a anchor [(:x tb) (:y tb)])           ; default: b's origin
-        wb  (or anchor-b anchor wa)
+        [wa wb] (if (= type :distance)
+                  ;; default: each body's own origin
+                  [(or anchor-a [(:x ta) (:y ta)]) (or anchor-b [(:x tb) (:y tb)])]
+                  ;; default: one shared point, b's origin
+                  (let [wa (or anchor-a anchor [(:x tb) (:y tb)])]
+                    [wa (or anchor-b anchor wa)]))
         [ax ay] (or axis [1 0])]
-    {:local-anchor-a  (or local-anchor-a (world->local ta wa))
-     :local-anchor-b  (or local-anchor-b (world->local tb wb))
-     :local-axis      (or local-axis
-                          (rotate [ax ay] (Math/cos (:angle ta)) (- (Math/sin (:angle ta)))))
-     :reference-angle (or reference-angle (- (:angle tb) (:angle ta)))}))
+    (cond-> {:local-anchor-a  (or local-anchor-a (world->local ta wa))
+             :local-anchor-b  (or local-anchor-b (world->local tb wb))
+             :local-axis      (or local-axis
+                                  (rotate [ax ay] (Math/cos (:angle ta)) (- (Math/sin (:angle ta)))))
+             :reference-angle (or reference-angle (- (:angle tb) (:angle ta)))}
+      (= type :distance)
+      (assoc :length (or length (let [[x1 y1] wa [x2 y2] wb]
+                                  (Math/sqrt (+ (* (- x2 x1) (- x2 x1)) (* (- y2 y1) (- y2 y1))))))))))
+
+(defn- state-buf
+  "The :state scratch buffer, after checking n doubles fit in it. The shim
+  writes into it without knowing its size, so this check is all that stops
+  an overrun."
+  [w n]
+  (when (> n STATE-DOUBLES)
+    (throw (ex-info "scratch buffer too small" {:need n :have STATE-DOUBLES})))
+  (:state (:scratch w)))
 
 (defn- params-buffer
   "A scratch buffer holding the doubles xs, for a <type>-create call."
   [w xs]
-  (let [buf (:state (:scratch w))]
+  (let [xs  (vec xs)
+        buf (state-buf w (count xs))]
     (dorun (map-indexed (fn [i x] (ffi/write buf :double (double x) (* 8 i))) xs))
     buf))
+
+(defn- spring-params [spring]
+  (let [{:keys [hertz damping] :or {hertz 0 damping 0}} (when (map? spring) spring)]
+    [(c/flag (map? spring)) hertz damping]))
+
+(defn- limit-params [limit]
+  (let [[lo hi] (when (vector? limit) limit)]
+    [(c/flag (vector? limit)) (or lo 0) (or hi 0)]))
+
+(defn- motor-params [motor max-key]
+  (let [{:keys [speed] :or {speed 0}} (when (map? motor) motor)]
+    [(c/flag (map? motor)) (or (get motor max-key) 0) speed]))
 
 (defn- prismatic-params
   [{:keys [spring target limit motor collide-connected?]}
    {[lax lay] :local-anchor-a [lbx lby] :local-anchor-b [axx axy] :local-axis :keys [reference-angle]}]
-  (let [{:keys [hertz damping] :or {hertz 0 damping 0}} (when (map? spring) spring)
-        [lo hi] (when (vector? limit) limit)
-        {:keys [max-force speed] :or {max-force 0 speed 0}} (when (map? motor) motor)]
-    [lax lay lbx lby axx axy reference-angle (or target 0)
-     (c/flag (map? spring)) hertz damping
-     (c/flag (vector? limit)) (or lo 0) (or hi 0)
-     (c/flag (map? motor)) max-force speed
-     (c/flag collide-connected?)]))
+  (concat [lax lay lbx lby axx axy reference-angle (or target 0)]
+          (spring-params spring) (limit-params limit) (motor-params motor :max-force)
+          [(c/flag collide-connected?)]))
+
+(defn- revolute-params
+  [{:keys [spring target limit motor collide-connected?]}
+   {[lax lay] :local-anchor-a [lbx lby] :local-anchor-b :keys [reference-angle]}]
+  (concat [lax lay lbx lby reference-angle (or target 0)]
+          (spring-params spring) (limit-params limit) (motor-params motor :max-torque)
+          [(c/flag collide-connected?)]))
+
+(defn- distance-params
+  [{:keys [spring limit motor collide-connected?]}
+   {[lax lay] :local-anchor-a [lbx lby] :local-anchor-b :keys [length]}]
+  (concat [lax lay lbx lby length]
+          (spring-params spring) (limit-params limit) (motor-params motor :max-force)
+          [(c/flag collide-connected?)]))
+
+(defn- read-buf [w id f n op j]
+  (let [buf (state-buf w n)]
+    (check! (f id buf) op {:joint j})
+    (c/read-doubles buf n)))
+
+(defn- read-prismatic [w id j]
+  (let [[tr sp mf son hz dz tgt lon lo hi mon ms mmf ax ay]
+        (read-buf w id f/prismatic-read f/PRISMATIC-READ :joint j)]
+    {:state    {:translation tr :speed sp :motor-force mf}
+     :settings {:spring (when (== 1.0 son) {:hertz hz :damping dz})
+                :target tgt
+                :limit  (when (== 1.0 lon) [lo hi])
+                :motor  (when (== 1.0 mon) {:max-force mmf :speed ms})
+                :local-axis [ax ay]}}))
+
+(defn- read-revolute [w id j]
+  (let [[ang mt son hz dz tgt lon lo hi mon ms mmt]
+        (read-buf w id f/revolute-read f/REVOLUTE-READ :joint j)
+        {:keys [a b]} (c/entry @(:registry w) :joint id)]
+    {:state    {:angle ang
+                ;; Box2D has no getter for it: b's spin relative to a's
+                :speed (- (:w (velocity w b)) (:w (velocity w a)))
+                :motor-torque mt}
+     :settings {:spring (when (== 1.0 son) {:hertz hz :damping dz})
+                :target tgt
+                :limit  (when (== 1.0 lon) [lo hi])
+                :motor  (when (== 1.0 mon) {:max-torque mmt :speed ms})}}))
+
+(defn- read-distance [w id j]
+  (let [[cur mf len son hz dz lon lo hi mon ms mmf]
+        (read-buf w id f/distance-read f/DISTANCE-READ :joint j)]
+    {:state    {:length cur :motor-force mf}
+     :settings {:length len
+                :spring (when (== 1.0 son) {:hertz hz :damping dz})
+                :limit  (when (== 1.0 lon) [lo hi])
+                :motor  (when (== 1.0 mon) {:max-force mmf :speed ms})}}))
+
+(def ^:private joint-kinds
+  "Per joint type: how to make it, change it and read it, and the key its
+  motor's limit goes by."
+  {:prismatic {:create f/prismatic-create :set f/prismatic-set :read read-prismatic
+               :params prismatic-params :max-motor :max-force}
+   :revolute  {:create f/revolute-create :set f/revolute-set :read read-revolute
+               :params revolute-params :max-motor :max-torque}
+   :distance  {:create f/distance-create :set f/distance-set :read read-distance
+               :params distance-params :max-motor :max-force}})
+
+(defn- joint-kind [type spec]
+  (or (joint-kinds type)
+      (throw (ex-info (str "unknown joint :type (so far: " (vec (sort (keys joint-kinds))) ")")
+                      {:spec spec}))))
 
 (defn- create-joint!
   "Makes a joint between body ids a and b from its spec and local frame, and
   records it. Returns the id."
   [w joint-name a b frame {:keys [type user-data] :or {user-data 0} :as spec}]
-  (let [id (case type
-             :prismatic (f/prismatic-create (:id w) a b
-                                            (params-buffer w (prismatic-params spec frame))
-                                            (long user-data))
-             (throw (ex-info "unknown joint :type (so far: :prismatic)" {:spec spec})))]
+  (let [{:keys [create params]} (joint-kind type spec)
+        id (create (:id w) a b (params-buffer w (params spec frame)) (long user-data))]
     (when (zero? id)
       (throw (ex-info "Box2D couldn't create the joint" {:name joint-name :spec spec})))
     (swap! (:registry w) c/add-entry :joint id
@@ -748,27 +861,31 @@
 (defn joint!
   "Joins two bodies and returns the joint id. With a keyword name, an
   existing joint of that name is replaced. Anchors and axes are world
-  space, taken where the bodies are now.
+  space, taken where the bodies are now. Every type takes :a, :b,
+  :collide-connected? (default false) and :user-data. Springs are
+  {:hertz h :damping z}; Box2D's springs lose a little each swing even at
+  :damping 0.
 
-  :prismatic  body :b slides along an axis fixed in body :a, keeping its
-              angle. {:type :prismatic :a body :b body
-                      :anchor [x y]          ; or :anchor-a / :anchor-b;
-                                             ; default: :b's origin
-                      :axis [x y]            ; the direction it slides, default [1 0]
-                      :spring {:hertz h :damping z}  ; pulls toward :target
-                                             ; (Box2D's springs lose a little
-                                             ; each swing even at :damping 0)
-                      :target t              ; translation the spring pulls to, m
-                      :limit [lower upper]   ; translation limits, m
-                      :motor {:max-force f :speed v}
-                      :collide-connected? b  ; default false
-                      :user-data u64}
-              Translation is measured along the axis from where :b started."
+  :prismatic  b slides along an axis fixed in a, keeping its angle.
+              :anchor [x y] (or :anchor-a / :anchor-b; default b's origin)
+              :axis [x y] (default [1 0]), :spring (pulls toward :target),
+              :target m, :limit [lower upper] m, :motor {:max-force N :speed m/s}.
+              Translation is measured along the axis from where b started.
+  :revolute   a hinge: b turns about :anchor (default b's origin).
+              :spring (pulls toward :target), :target radians,
+              :limit [lower upper] radians (within ±0.99π),
+              :motor {:max-torque N·m :speed rad/s}. Angles are measured from
+              how the bodies are turned when it's made (or :reference-angle).
+  :distance   keeps :anchor-a on a and :anchor-b on b (default: their
+              origins) :length apart (default: as far apart as they are).
+              Rigid unless it has a :spring; :limit [min max] m bounds it
+              either way; :motor {:max-force N :speed m/s}."
   ([w spec] (joint! w nil spec))
-  ([w joint-name {:keys [a b] :as spec}]
+  ([w joint-name {:keys [type a b] :as spec}]
    (live! w)
    (when (and joint-name (not (keyword? joint-name)))
      (throw (ex-info "joint names are keywords" {:name joint-name})))
+   (joint-kind type spec)
    (let [a (body-id w a)
          b (body-id w b)]
      (when-let [old (and joint-name (c/resolve-id @(:registry w) :joint joint-name))]
@@ -788,38 +905,46 @@
     (check! (f/joint-destroy id) :destroy-joint! {:joint name-or-id})
     nil))
 
-(defn- prismatic-set! [id what v1 v2 j]
-  (check! (f/prismatic-set id (int what) (double v1) (double v2)) :set-joint! {:joint j}))
+(defn- setting-calls
+  "The [selector v1 v2] calls a settings map turns into, for a joint whose
+  motor limit goes by max-key."
+  [{:keys [spring target length limit motor]} settings max-key]
+  (cond-> []
+    (contains? settings :spring)
+    (into (cons [f/SET-SPRING-ON (c/flag spring) 0]
+                (when (map? spring)
+                  (cond-> []
+                    (:hertz spring)   (conj [f/SET-SPRING-HERTZ (:hertz spring) 0])
+                    (:damping spring) (conj [f/SET-SPRING-DAMPING (:damping spring) 0])))))
+    (some? target) (conj [f/SET-TARGET target 0])
+    (some? length) (conj [f/SET-LENGTH length 0])
+    (contains? settings :limit)
+    (into (cons [f/SET-LIMIT-ON (c/flag limit) 0]
+                (when (vector? limit) [[f/SET-LIMITS (first limit) (second limit)]])))
+    (contains? settings :motor)
+    (into (cons [f/SET-MOTOR-ON (c/flag motor) 0]
+                (when (map? motor)
+                  (cond-> []
+                    (:speed motor)        (conj [f/SET-MOTOR-SPEED (:speed motor) 0])
+                    (get motor max-key)   (conj [f/SET-MAX-MOTOR (get motor max-key) 0])))))))
 
 (defn set-joint!
   "Changes a joint's settings while the world runs, and remembers them so a
-  remade joint keeps them. For :prismatic, any of
-    {:spring {:hertz h :damping z} or false, :target t,
-     :limit [lower upper] or false, :motor {:max-force f :speed v} or false,
-     :collide-connected? b}
-  :spring may give just :hertz or :damping."
+  remade joint keeps them. Any of
+    {:spring {:hertz h :damping z} or false   ; either key alone is fine
+     :target t                    ; :prismatic (m), :revolute (radians)
+     :length m                    ; :distance rest length
+     :limit [lower upper] or false
+     :motor {:max-force or :max-torque, :speed} or false
+     :collide-connected? b}"
   [w name-or-id settings]
   (let [id (joint-id w name-or-id)
         {:keys [type]} (joint-entry w id :set-joint!)
-        {:keys [spring target limit motor collide-connected?]} settings]
-    (case type
-      :prismatic
-      (do (when (contains? settings :spring)
-            (prismatic-set! id f/SET-SPRING-ON (c/flag spring) 0 name-or-id)
-            (when (map? spring)
-              (when-let [h (:hertz spring)]   (prismatic-set! id f/SET-SPRING-HERTZ h 0 name-or-id))
-              (when-let [z (:damping spring)] (prismatic-set! id f/SET-SPRING-DAMPING z 0 name-or-id))))
-          (when (some? target) (prismatic-set! id f/SET-TARGET target 0 name-or-id))
-          (when (contains? settings :limit)
-            (prismatic-set! id f/SET-LIMIT-ON (c/flag limit) 0 name-or-id)
-            (when (vector? limit) (prismatic-set! id f/SET-LIMITS (first limit) (second limit) name-or-id)))
-          (when (contains? settings :motor)
-            (prismatic-set! id f/SET-MOTOR-ON (c/flag motor) 0 name-or-id)
-            (when (map? motor)
-              (when-let [v (:speed motor)]     (prismatic-set! id f/SET-MOTOR-SPEED v 0 name-or-id))
-              (when-let [m (:max-force motor)] (prismatic-set! id f/SET-MAX-MOTOR m 0 name-or-id))))))
-    (when (some? collide-connected?)
-      (check! (f/joint-set-collide-connected id (int (c/flag collide-connected?)))
+        {set-fn :set :keys [max-motor]} (joint-kinds type)]
+    (doseq [[what v1 v2] (setting-calls settings settings max-motor)]
+      (check! (set-fn id (int what) (double v1) (double v2)) :set-joint! {:joint name-or-id}))
+    (when (some? (:collide-connected? settings))
+      (check! (f/joint-set-collide-connected id (int (c/flag (:collide-connected? settings))))
               :set-joint! {:joint name-or-id}))
     ;; remember it: merge maps (a partial :spring keeps the other key)
     (swap! (:registry w) update-in [:entries :joint id :spec]
@@ -828,32 +953,21 @@
     nil))
 
 (defn- read-joint-common [w id j]
-  (let [buf (:state (:scratch w))]
-    (check! (f/joint-read id buf) :joint {:joint j})
-    (let [[_ fx fy torque lin ang] (c/read-doubles buf f/JOINT-DOUBLES)]
-      {:force [fx fy] :torque torque :linear-separation lin :angular-separation ang})))
-
-(defn- read-prismatic [w id j]
-  (let [buf (:state (:scratch w))]
-    (check! (f/prismatic-read id buf) :joint {:joint j})
-    (let [[tr sp mf son hz dz tgt lon lo hi mon ms mmf ax ay] (c/read-doubles buf f/PRISMATIC-READ)]
-      {:state    {:translation tr :speed sp :motor-force mf}
-       :settings {:spring (when (== 1.0 son) {:hertz hz :damping dz})
-                  :target tgt
-                  :limit  (when (== 1.0 lon) [lo hi])
-                  :motor  (when (== 1.0 mon) {:max-force mmf :speed ms})
-                  :local-axis [ax ay]}})))
+  (let [[_ fx fy torque lin ang] (read-buf w id f/joint-read f/JOINT-DOUBLES :joint j)]
+    {:force [fx fy] :torque torque :linear-separation lin :angular-separation ang}))
 
 (defn joint-state
-  "A joint's live state. For :prismatic {:translation m :speed m/s
-  :motor-force N}, plus for every joint {:force [fx fy] :torque N·m} (what
-  the joint is doing to hold the bodies together) and how far apart it's
-  being pulled (:linear-separation, :angular-separation)."
+  "A joint's live state:
+    :prismatic {:translation m :speed m/s :motor-force N}
+    :revolute  {:angle rad :speed rad/s :motor-torque N·m}
+    :distance  {:length m (now) :motor-force N}
+  plus for every joint {:force [fx fy] :torque N·m} (what the joint is doing
+  to hold the bodies together) and how far apart it's being pulled
+  (:linear-separation, :angular-separation)."
   [w name-or-id]
   (let [id (joint-id w name-or-id)
         {:keys [type]} (joint-entry w id :joint-state)]
-    (merge (case type
-             :prismatic (:state (read-prismatic w id name-or-id)))
+    (merge (:state ((:read (joint-kinds type)) w id name-or-id))
            (read-joint-common w id name-or-id))))
 
 (defn- joint-anchors
@@ -886,7 +1000,7 @@
      :b-name   (:name (c/entry reg :body b))
      :spec     (:spec j)
      :frame    (:frame j)
-     :settings (case type :prismatic (:settings (read-prismatic w id name-or-id)))
+     :settings (:settings ((:read (joint-kinds type)) w id name-or-id))
      :state    (joint-state w id)
      :anchors  (joint-anchors w j)}))
 

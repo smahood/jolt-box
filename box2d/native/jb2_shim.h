@@ -68,6 +68,12 @@ int jb2_shape_enable_contact_events(uint64_t shape, int enable);
 int jb2_shape_enable_hit_events(uint64_t shape, int enable);
 int jb2_shape_enable_sensor_events(uint64_t shape, int enable);
 
+/* Collision filtering (b2Filter). Shapes collide when each one's category
+ * is in the other's mask, unless they share a group: the same negative group
+ * never collides, the same positive group always does. Defaults: category 1,
+ * mask all, group 0. */
+int jb2_shape_set_filter(uint64_t shape, uint64_t category, uint64_t mask, int group);
+
 /* The shapes a sensor shape overlaps right now (as of the last step), up to
  * cap (at most JB2_MAX_OVERLAPS). ids_out[i*2 ..] = shape, body. Returns the
  * number written, or JB2_BAD_ID (also for a shape that isn't a sensor). */
@@ -163,7 +169,8 @@ uint64_t jb2_prismatic_create(uint32_t world, uint64_t body_a, uint64_t body_b,
 #define JB2_SET_LIMITS 5        /* v1 lower, v2 upper */
 #define JB2_SET_MOTOR_ON 6
 #define JB2_SET_MOTOR_SPEED 7
-#define JB2_SET_MAX_MOTOR 8     /* max motor force (prismatic) */
+#define JB2_SET_MAX_MOTOR 8     /* max motor force (prismatic, distance) or torque (revolute) */
+#define JB2_SET_LENGTH 9        /* rest length (distance) */
 int jb2_prismatic_set(uint64_t joint, int what, double v1, double v2);
 
 /* Writes JB2_PRISMATIC_READ doubles:
@@ -174,5 +181,46 @@ int jb2_prismatic_set(uint64_t joint, int what, double v1, double v2);
  *   13 14 local axis a */
 #define JB2_PRISMATIC_READ 15
 int jb2_prismatic_read(uint64_t joint, double *out);
+
+/* revolute: a hinge. body b turns about an anchor on body a.
+ * params (JB2_REVOLUTE_PARAMS doubles):
+ *   0 1 local anchor a   2 3 local anchor b   4 reference angle  5 target angle
+ *   6 spring on  7 hertz  8 damping ratio
+ *   9 limit on  10 lower angle  11 upper angle
+ *   12 motor on  13 max motor torque  14 motor speed
+ *   15 collide connected */
+#define JB2_REVOLUTE_PARAMS 16
+uint64_t jb2_revolute_create(uint32_t world, uint64_t body_a, uint64_t body_b,
+                             const double *params, uint64_t user_data);
+/* what: JB2_SET_* (JB2_SET_TARGET is the target angle) */
+int jb2_revolute_set(uint64_t joint, int what, double v1, double v2);
+/* Writes JB2_REVOLUTE_READ doubles:
+ *   0 angle  1 motor torque
+ *   2 spring on  3 hertz  4 damping  5 target angle
+ *   6 limit on  7 lower  8 upper
+ *   9 motor on  10 motor speed  11 max motor torque */
+#define JB2_REVOLUTE_READ 12
+int jb2_revolute_read(uint64_t joint, double *out);
+
+/* distance: keeps an anchor on each body a set length apart, rigidly or on
+ * a spring, optionally within a range.
+ * params (JB2_DISTANCE_PARAMS doubles):
+ *   0 1 local anchor a   2 3 local anchor b   4 rest length
+ *   5 spring on  6 hertz  7 damping ratio
+ *   8 limit on  9 min length  10 max length
+ *   11 motor on  12 max motor force  13 motor speed
+ *   14 collide connected */
+#define JB2_DISTANCE_PARAMS 15
+uint64_t jb2_distance_create(uint32_t world, uint64_t body_a, uint64_t body_b,
+                             const double *params, uint64_t user_data);
+/* what: JB2_SET_* (JB2_SET_LENGTH for the rest length, JB2_SET_LIMITS for the range) */
+int jb2_distance_set(uint64_t joint, int what, double v1, double v2);
+/* Writes JB2_DISTANCE_READ doubles:
+ *   0 current length  1 motor force  2 rest length
+ *   3 spring on  4 hertz  5 damping
+ *   6 limit on  7 min  8 max
+ *   9 motor on  10 motor speed  11 max motor force */
+#define JB2_DISTANCE_READ 12
+int jb2_distance_read(uint64_t joint, double *out);
 
 #endif

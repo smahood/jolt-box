@@ -39,6 +39,7 @@
 (ffi/defcfn shape-enable-contact-events "jb2_shape_enable_contact_events" [:uint64 :int] :int)
 (ffi/defcfn shape-enable-hit-events     "jb2_shape_enable_hit_events"     [:uint64 :int] :int)
 (ffi/defcfn shape-enable-sensor-events  "jb2_shape_enable_sensor_events"  [:uint64 :int] :int)
+(ffi/defcfn shape-set-filter "jb2_shape_set_filter" [:uint64 :uint64 :uint64 :int] :int)
 (def MAX-OVERLAPS 64)       ; JB2_MAX_OVERLAPS
 (ffi/defcfn shape-sensor-overlaps "jb2_shape_sensor_overlaps" [:uint64 :pointer :int] :int)
 (ffi/defcfn body-mass-data "jb2_body_mass_data" [:uint64 :pointer] :int)
@@ -89,9 +90,22 @@
 (def SET-MOTOR-ON 6)
 (def SET-MOTOR-SPEED 7)
 (def SET-MAX-MOTOR 8)
+(def SET-LENGTH 9)
 
 (def PRISMATIC-PARAMS 18)   ; JB2_PRISMATIC_PARAMS
 (def PRISMATIC-READ 15)     ; JB2_PRISMATIC_READ
 (ffi/defcfn prismatic-create "jb2_prismatic_create" [:uint32 :uint64 :uint64 :pointer :uint64] :uint64)
 (ffi/defcfn prismatic-set    "jb2_prismatic_set"    [:uint64 :int :double :double] :int)
 (ffi/defcfn prismatic-read   "jb2_prismatic_read"   [:uint64 :pointer] :int)
+
+(def REVOLUTE-PARAMS 16)    ; JB2_REVOLUTE_PARAMS
+(def REVOLUTE-READ 12)      ; JB2_REVOLUTE_READ
+(ffi/defcfn revolute-create "jb2_revolute_create" [:uint32 :uint64 :uint64 :pointer :uint64] :uint64)
+(ffi/defcfn revolute-set    "jb2_revolute_set"    [:uint64 :int :double :double] :int)
+(ffi/defcfn revolute-read   "jb2_revolute_read"   [:uint64 :pointer] :int)
+
+(def DISTANCE-PARAMS 15)    ; JB2_DISTANCE_PARAMS
+(def DISTANCE-READ 12)      ; JB2_DISTANCE_READ
+(ffi/defcfn distance-create "jb2_distance_create" [:uint32 :uint64 :uint64 :pointer :uint64] :uint64)
+(ffi/defcfn distance-set    "jb2_distance_set"    [:uint64 :int :double :double] :int)
+(ffi/defcfn distance-read   "jb2_distance_read"   [:uint64 :pointer] :int)

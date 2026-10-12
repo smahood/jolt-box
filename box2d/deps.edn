@@ -37,14 +37,16 @@
    :depends [box2d-src]
    ;; Rebuilt only when the shim or this file is newer than the library.
    ;; Box2D's sources are listed one by one: no shell expands a glob here.
-   ;; B2_ENABLE_ASSERT stays off, because a Box2D assert aborts the process
-   ;; (and the REPL with it); the shim validates ids instead.
+   ;; -DNDEBUG compiles Box2D's asserts out (they're on unless it's defined,
+   ;; and one stops the process, REPL and all); the shim validates ids
+   ;; instead. Drop it to debug Box2D itself: the shim then reports a failed
+   ;; assert on stderr before stopping.
    :task (if (and (fs/exists? lib)
                   (empty? (fs/modified-since lib ["native/jb2_shim.c" "native/jb2_shim.h"
                                                   "deps.edn"])))
            (println "native: up to date -" lib)
            (let [srcs (sort (map str (fs/glob (str box2d-home "/src") "*.c")))]
-             (apply shell "clang" "-O2" "-std=c17" "-shared" "-fPIC"
+             (apply shell "clang" "-O2" "-DNDEBUG" "-std=c17" "-shared" "-fPIC"
                     (str "-I" box2d-home "/include")
                     (str "-I" box2d-home "/src")
                     "-Inative"
