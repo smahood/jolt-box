@@ -820,3 +820,35 @@
     (is (false? (b2/awake? w :sleepy)))
     (is (not (:awake? (b2/body-info w :sleepy))) "under its threshold, so it slept while moving")
     (is (< (:vx (b2/velocity w :draggy)) 0.01) "damped to a stop")))
+
+;; --- joint frames that move at runtime -----------------------------------------
+
+(deftest moving-a-joints-anchors
+  (b2/with-world [w]
+    ;; a pendulum: bob hangs from the pin on a revolute joint 0.5 m below it
+    (b2/body! w :pin {:shapes [{:box [0.05 0.05]}]})
+    (b2/body! w :bob {:type :dynamic :pos [0 0.5] :shapes [{:circle 0.1}]})
+    (b2/joint! w :pivot {:type :revolute :a :pin :b :bob :anchor [0 0]})
+    (b2/simulate w 1.0)
+    (is (near? (:y (b2/transform w :bob)) 0.5 0.01))
+    (testing "moving the anchor on the bob lengthens the pendulum"
+      (b2/set-joint! w :pivot {:local-anchor-b [0 -1.5]})
+      (b2/simulate w 2.0)
+      (is (near? (:y (b2/transform w :bob)) 1.5 0.02) "it drops to hang 1.5 m below")
+      (is (= [0 -1.5] (get-in (b2/joint-info w :pivot) [:frame :local-anchor-b])) "the registry follows")
+      (is (points-near? [[0 0] [0 0]] (:anchors (b2/joint-info w :pivot)) 0.02)
+          "both anchors still meet at the pin"))
+    (testing "and on the pin, which moves the pivot"
+      (b2/set-joint! w :pivot {:local-anchor-a [1 0]})
+      ;; it swings, undamped, about the new pivot
+      (let [{:keys [min max]} (b2/extent (b2/simulate w 3.0 {:sample [:bob]}) :bob :x)]
+        (is (near? (/ (+ min max) 2) 1.0 0.1) "swinging about x = 1")))
+    (testing "a remade joint keeps the moved frame"
+      (b2/body! w :bob {:type :dynamic :pos [1 1.5] :shapes [{:circle 0.1}]})
+      (is (= [0 -1.5] (get-in (b2/joint-info w :pivot) [:frame :local-anchor-b]))))
+    (testing "an axis with no direction is refused"
+      (b2/body! w :slider {:type :dynamic :pos [3 0] :shapes [{:box [0.1 0.1]}]})
+      (b2/joint! w :rail {:type :prismatic :a :pin :b :slider :axis [1 0]})
+      (is (thrown-ex-info? #(b2/set-joint! w :rail {:local-axis [0 0]})))
+      (b2/set-joint! w :rail {:local-axis [0 1] :reference-angle 0.0})
+      (is (= [0 1] (get-in (b2/joint-info w :rail) [:frame :local-axis]))))))

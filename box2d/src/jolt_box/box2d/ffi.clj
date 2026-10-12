@@ -78,6 +78,11 @@
 (ffi/defcfn joint-wake     "jb2_joint_wake"      [:uint64] :int)
 (ffi/defcfn joint-set-collide-connected "jb2_joint_set_collide_connected" [:uint64 :int] :int)
 (ffi/defcfn joint-bodies   "jb2_joint_bodies"    [:uint64 :pointer] :int)
+(def FRAME-ANCHOR-A 0)      ; JB2_FRAME_*
+(def FRAME-ANCHOR-B 1)
+(def FRAME-AXIS-A 2)
+(def FRAME-REFERENCE 3)
+(ffi/defcfn joint-set-frame "jb2_joint_set_frame" [:uint64 :int :double :double] :int)
 (def JOINT-DOUBLES 11)      ; JB2_JOINT_DOUBLES
 (ffi/defcfn joint-read     "jb2_joint_read"      [:uint64 :pointer] :int)
 

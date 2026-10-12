@@ -974,7 +974,11 @@
      :limit [lower upper] or false
      :motor {:max-force or :max-torque, :speed} or false
      :linear-hertz :angular-hertz :linear-damping :angular-damping  ; :weld
-     :collide-connected? b}"
+     :collide-connected? b
+     ;; where it attaches, in the bodies' local frames (moving these at
+     ;; runtime is how a joint changes shape, e.g. a neck that grows):
+     :local-anchor-a [x y] :local-anchor-b [x y] :local-axis [x y]
+     :reference-angle rad}"
   [w name-or-id settings]
   (let [id (joint-id w name-or-id)
         {:keys [type]} (joint-entry w id :set-joint!)
@@ -984,10 +988,24 @@
     (when (some? (:collide-connected? settings))
       (check! (f/joint-set-collide-connected id (int (c/flag (:collide-connected? settings))))
               :set-joint! {:joint name-or-id}))
+    (let [frame (select-keys settings [:local-anchor-a :local-anchor-b :local-axis :reference-angle])]
+      (doseq [[k v] frame]
+        (let [[what x y] (case k
+                           :local-anchor-a  [f/FRAME-ANCHOR-A (first v) (second v)]
+                           :local-anchor-b  [f/FRAME-ANCHOR-B (first v) (second v)]
+                           :local-axis      [f/FRAME-AXIS-A (first v) (second v)]
+                           :reference-angle [f/FRAME-REFERENCE v 0])]
+          (check! (f/joint-set-frame id (int what) (double x) (double y))
+                  :set-joint! {:joint name-or-id k v})))
+      ;; the registry's frame is what debug-shapes, joint-info and a remade
+      ;; joint use, so keep it in step
+      (when (seq frame)
+        (swap! (:registry w) update-in [:entries :joint id :frame] merge frame)))
     ;; remember it: merge maps (a partial :spring keeps the other key)
     (swap! (:registry w) update-in [:entries :joint id :spec]
            (fn [s] (merge-with (fn [old new] (if (and (map? old) (map? new)) (merge old new) new))
-                               s settings)))
+                               s (dissoc settings :local-anchor-a :local-anchor-b
+                                         :local-axis :reference-angle))))
     nil))
 
 (defn- read-joint-common [w id j]

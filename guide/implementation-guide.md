@@ -762,7 +762,23 @@ the floor, so the hop comes out of the physics.
   `:tuning`, and `physics/tune!` only applies what changed.
 - Known quirk: right after some landings the toilet lifts 1–2 px for a
   few frames as the head's momentum settles into the neck's slider.
-- *Later change (game only):* Up/Down now **grow** the neck instead of
+- *Later change:* the neck **curves and grows**. jolt-box got
+  `jb2_joint_set_frame` (anchors, axis, reference angle) and `set-joint!`
+  keys `:local-anchor-a :local-anchor-b :local-axis :reference-angle`, which
+  also update the registry's `:frame` so outlines, `joint-info` and remade
+  joints follow. The game's neck is a list of segments on hinges whose
+  anchors move as it grows, with two modes on a dev-panel toggle: *stretch*
+  (a fixed number of segments, all lengthening) and *segments* (hinges a
+  fixed spacing apart; the lowest segment grows and a new one is added
+  below it at each spacing, and removed again when shrinking). Lessons:
+  each hinge's spring is derived from everything above it (head and
+  segments) and from half a segment's inertia (Box2D sizes it by both
+  bodies); a tall chain buckles below ~3× gravity; the neck only curves if
+  it lags the jump (`:whip`, applied at take-off only: applying it in the
+  every-frame "stop sliding" pumped the sway up); and the slow sway is only
+  settled by *linear* damping on the neck and head (`:neck-drag`), not by
+  the hinges' damping or angular damping.
+- *Earlier change (game only):* Up/Down **grew** the neck instead of
   sliding it out of the bowl (a raised periscope neck floated above the
   bowl). It telescopes: a lower piece hinged to the bowl at the water line
   and an upper piece on a prismatic joint whose `:limit [len len]` is moved

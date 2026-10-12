@@ -140,6 +140,15 @@ int jb2_joint_destroy(uint64_t joint);
 int jb2_joint_wake(uint64_t joint);
 int jb2_joint_set_collide_connected(uint64_t joint, int collide);
 
+/* Moves where a joint attaches while the world runs. what: JB2_FRAME_*.
+ * Anchors and the axis are in the body's local frame; the axis is
+ * normalized. Wakes the bodies. */
+#define JB2_FRAME_ANCHOR_A 0   /* x y */
+#define JB2_FRAME_ANCHOR_B 1   /* x y */
+#define JB2_FRAME_AXIS_A 2     /* x y (prismatic, wheel) */
+#define JB2_FRAME_REFERENCE 3  /* x = reference angle (prismatic, revolute, weld) */
+int jb2_joint_set_frame(uint64_t joint, int what, double x, double y);
+
 /* Writes 2 ids: body a, body b. */
 int jb2_joint_bodies(uint64_t joint, uint64_t *out);
 

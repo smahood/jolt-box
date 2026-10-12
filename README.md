@@ -80,6 +80,7 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(joint! w name? {:type :distance :a :b :anchor-a [x y] :anchor-b [x y] :length m :spring {..} :limit [min max] :motor {:max-force :speed}})` | rigid unless it has a `:spring`; anchors default to the bodies' origins, length to how far apart they are |
 | `(joint! w name? {:type :weld :a :b :anchor [x y] :linear-hertz :angular-hertz :linear-damping :angular-damping})` | holds b fixed to a; 0 hertz is rigid |
 | `(set-joint! w joint {:spring {..}\|false :target t :length m :limit [lo hi]\|false :motor {..}\|false :linear-hertz .. :collide-connected? b})` | change it live (remembered if the joint is remade) |
+| `(set-joint! w joint {:local-anchor-a [x y] :local-anchor-b [x y] :local-axis [x y] :reference-angle rad})` | move where it attaches, in the bodies' local frames (e.g. a neck that grows) |
 | `(joint-forces w joints)` | `[{:id :force :fx :fy :torque}]` as of the last step |
 | `(break-joints! w joints {:max-force :max-torque})`, `(break-joints! w joints pred)` | snaps the overloaded ones, returns their ids |
 | `(joint-state w joint)` | prismatic `{:translation :speed :motor-force}`, revolute `{:angle :speed :motor-torque}`, distance `{:length :motor-force}`, plus `{:force [fx fy] :torque :linear-separation :angular-separation}` |

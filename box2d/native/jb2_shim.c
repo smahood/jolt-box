@@ -481,6 +481,26 @@ int jb2_joint_set_collide_connected(uint64_t joint, int collide)
 	return JB2_OK;
 }
 
+int jb2_joint_set_frame(uint64_t joint, int what, double x, double y)
+{
+	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
+	b2JointId id = b2LoadJointId(joint);
+	b2Vec2 v = { (float)x, (float)y };
+	switch (what)
+	{
+		case JB2_FRAME_ANCHOR_A: b2Joint_SetLocalAnchorA(id, v); break;
+		case JB2_FRAME_ANCHOR_B: b2Joint_SetLocalAnchorB(id, v); break;
+		case JB2_FRAME_AXIS_A:
+			if (b2Length(v) < 1e-6f) return JB2_BAD_ID; /* no direction to normalize */
+			b2Joint_SetLocalAxisA(id, b2Normalize(v));
+			break;
+		case JB2_FRAME_REFERENCE: b2Joint_SetReferenceAngle(id, (float)x); break;
+		default: return JB2_BAD_ID;
+	}
+	b2Joint_WakeBodies(id);
+	return JB2_OK;
+}
+
 int jb2_joint_bodies(uint64_t joint, uint64_t *out)
 {
 	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
