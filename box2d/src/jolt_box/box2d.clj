@@ -31,7 +31,18 @@
 
 ;; --- world handle ------------------------------------------------------------
 
-(defrecord World [id gravity alive registry scratch acc max-steps])
+(defrecord World [id gravity alive registry scratch acc max-steps collect-events? events])
+
+(def ^:private EVENT-CAP
+  "The most events of one kind read back from a single step."
+  512)
+
+(def ^:private MAX-PENDING
+  "The most events of one kind kept waiting for contact-events; beyond this
+  they're counted in :dropped instead."
+  4096)
+
+(def ^:private no-events {:begin [] :end [] :hit [] :dropped 0})
 
 (defmethod print-method World [w ^java.io.Writer out]
   (.write out (if @(:alive w)
@@ -55,20 +66,28 @@
   rc)
 
 (defn make-world
-  "A new single-threaded Box2D world.
-  Options: :gravity [gx gy] (default [0 9.8], y-down), :max-steps (the most
-  steps one step-fixed! call will run, default 5)."
+  "A new single-threaded Box2D world. Options:
+    :gravity [gx gy]       default [0 9.8], y-down
+    :max-steps n           the most steps one step-fixed! call runs, default 5
+    :hit-event-threshold   approach speed (m/s) a collision needs to count as
+                           a hit, default Box2D's 1.0
+    :collect-events?       default true: every step's contact events are kept
+                           until contact-events is called, so none are lost
+                           when step-fixed! runs several steps in one frame"
   ([] (make-world {}))
-  ([{:keys [gravity max-steps] :or {gravity [0 9.8] max-steps 5}}]
+  ([{:keys [gravity max-steps hit-event-threshold collect-events?]
+     :or   {gravity [0 9.8] max-steps 5 hit-event-threshold -1.0 collect-events? true}}]
    (let [[gx gy] gravity
-         id (f/world-create (double gx) (double gy))]
+         id (f/world-create (double gx) (double gy) (double hit-event-threshold))]
      (when (zero? id)
        (throw (ex-info "Box2D couldn't create a world (too many worlds?)" {:gravity gravity})))
      (->World id gravity (atom true) (atom c/empty-registry)
               {:state (ffi/alloc 64)                                   ; one body's numbers
                :ids   (ffi/alloc (* 8 f/MAX-CONTACTS))                 ; contact body ids
-               :data  (ffi/alloc (* 8 f/CONTACT-DOUBLES f/MAX-CONTACTS))}
-              (atom 0.0) max-steps))))
+               :data  (ffi/alloc (* 8 f/CONTACT-DOUBLES f/MAX-CONTACTS))
+               :ev-ids  (ffi/alloc (* 8 f/EVENT-IDS EVENT-CAP))             ; contact events
+               :ev-data (ffi/alloc (* 8 f/EVENT-DOUBLES EVENT-CAP))}
+              (atom 0.0) max-steps (boolean collect-events?) (atom no-events)))))
 
 (defn destroy!
   "Releases world w and everything in it. Safe to call more than once."
@@ -89,12 +108,15 @@
 
 ;; --- stepping ----------------------------------------------------------------
 
+(declare collect-events!)
+
 (defn step!
   "Advances world w by dt seconds, using substeps sub-steps (default 4)."
   ([w dt] (step! w dt SUBSTEPS))
   ([w dt substeps]
    (live! w)
    (check! (f/world-step (:id w) (double dt) (int substeps)) :step! {:world (:id w)})
+   (when (:collect-events? w) (collect-events! w))
    nil))
 
 (defn step-fixed!
@@ -129,15 +151,18 @@
 (defn- add-shape!
   "Adds one shape spec to body id. Returns the shape id, or nil if Box2D
   rejected it."
-  [id {:keys [box offset angle density friction restitution]
+  [id {:keys [box offset angle density friction restitution
+              contact-events? hit-events?]
        :or   {offset [0 0] angle 0 density 1.0 friction 0.6 restitution 0.0}
        :as   shape}]
   (cond
     box (let [[hw hh] box
               [ox oy] offset
+              flags (bit-or (if contact-events? f/SHAPE-CONTACT-EVENTS 0)
+                            (if hit-events? f/SHAPE-HIT-EVENTS 0))
               sid (f/body-add-box id (double hw) (double hh) (double ox) (double oy)
                                   (double angle) (double density)
-                                  (double friction) (double restitution))]
+                                  (double friction) (double restitution) (int flags))]
           (when-not (zero? sid) sid))
     :else (throw (ex-info "unknown shape kind (step 0 supports :box)" {:shape shape}))))
 
@@ -155,7 +180,10 @@
     :awake?          false makes it start asleep (default true)
     :user-data u64   an integer to hand back later, e.g. a flecs entity id
     :shapes          [{:box [half-w half-h] :offset [x y] :angle a
-                       :density d :friction f :restitution r}]"
+                       :density d :friction f :restitution r
+                       :contact-events? b :hit-events? b}]
+                     Contact (begin/end touching) and hit events are off by
+                     default; they're reported when either shape asks."
   ([w spec] (body! w nil spec))
   ([w body-name {:keys [type pos angle fixed-rotation? awake? user-data shapes]
                  :or   {type :static pos [0 0] angle 0 awake? true user-data 0}
@@ -264,7 +292,9 @@
 
 (defn set-transform!
   "Teleports a body to [x y], keeping its angle unless one is given. Box2D
-  calls this fairly expensive: fine for resets, not for every frame."
+  calls this fairly expensive: fine for resets, not for every frame.
+  Contacts lag a step behind: until the next step, contacts and grounded?
+  still describe where the body was."
   ([w body pos] (set-transform! w body pos (:angle (transform w body))))
   ([w body [x y] angle]
    (check! (f/body-set-transform (body-id w body) (double x) (double y) (double angle))
@@ -358,6 +388,155 @@
                           (<= (+ (* (- vx ovx) nx) (* (- vy ovy) ny))
                               max-separating-speed))))
                  (contacts w body)))))))
+
+;; --- mass and momentum -------------------------------------------------------
+
+(defn mass-data
+  "A body's mass properties: {:mass kg :inertia kg·m² (about the center of
+  mass) :center [x y] (world) :local-center [x y] (relative to the body)}."
+  [w body]
+  (let [id  (body-id w body)
+        buf (:state (:scratch w))]
+    (check! (f/body-mass-data id buf) :mass-data {:body body})
+    (let [[m i lx ly wx wy] (c/read-doubles buf 6)]
+      {:mass m :inertia i :center [wx wy] :local-center [lx ly]})))
+
+(defn mass
+  "A body's mass in kg (0 for static bodies)."
+  [w body]
+  (:mass (mass-data w body)))
+
+(defn momentum
+  "A body's linear momentum, mass × velocity: {:px :py} in kg·m/s."
+  [w body]
+  (let [m (mass w body)
+        {:keys [vx vy]} (velocity w body)]
+    {:px (* m vx) :py (* m vy)}))
+
+;; --- shapes ------------------------------------------------------------------
+
+(defn shapes
+  "A body's shape ids, in the order its spec listed them."
+  [w body]
+  (:shapes (c/entry @(:registry w) :body (body-id w body))))
+
+(defn shape-body
+  "The body a shape belongs to."
+  [w shape]
+  (live! w)
+  (let [b (f/shape-body shape)]
+    (when (zero? b) (check! -1 :shape-body {:shape shape}))
+    b))
+
+(defn set-shape!
+  "Changes a shape's settings while the world runs. Any of
+  {:friction f :restitution r :density d :contact-events? b :hit-events? b}.
+  A new density updates the body's mass."
+  [w shape {:keys [friction restitution density contact-events? hit-events?] :as settings}]
+  (live! w)
+  (let [ok! #(check! % :set-shape! {:shape shape :settings settings})]
+    (when (some? friction)        (ok! (f/shape-set-friction shape (double friction))))
+    (when (some? restitution)     (ok! (f/shape-set-restitution shape (double restitution))))
+    (when (some? density)         (ok! (f/shape-set-density shape (double density))))
+    (when (some? contact-events?) (ok! (f/shape-enable-contact-events shape (int (c/flag contact-events?)))))
+    (when (some? hit-events?)     (ok! (f/shape-enable-hit-events shape (int (c/flag hit-events?)))))
+    nil))
+
+(defn user-data
+  "The :user-data a body was made with (0 if none)."
+  [w body]
+  (f/body-user-data (body-id w body)))
+
+;; --- contact events ----------------------------------------------------------
+
+(defn- read-events
+  "Box2D's events of one kind from the last step, as maps."
+  [w kind-n kind]
+  (let [{:keys [ev-ids ev-data]} (:scratch w)
+        total (f/world-contact-events (:id w) (int kind-n) ev-ids ev-data EVENT-CAP)
+        _     (when (neg? total) (check! total :contact-events {:world (:id w)}))
+        reg   @(:registry w)
+        about (fn [body]
+                (let [e (c/entry reg :body body)]
+                  [(:name e) (get-in e [:spec :user-data] 0)]))]
+    {:dropped (max 0 (- total EVENT-CAP))
+     :events
+     (mapv (fn [i]
+             (let [id #(ffi/read ev-ids :uint64 (* 8 (+ (* i f/EVENT-IDS) %)))
+                   [nx ny px py extra] (c/read-doubles-at ev-data (* i f/EVENT-DOUBLES)
+                                                          f/EVENT-DOUBLES)
+                   ba (id 2) bb (id 3)
+                   [na ua] (about ba)
+                   [nb ub] (about bb)]
+               (cond-> {:shape-a (id 0) :shape-b (id 1) :body-a ba :body-b bb
+                        :name-a na :name-b nb :user-a ua :user-b ub}
+                 (= kind :begin) (assoc :normal [nx ny] :point [px py] :points (long extra))
+                 (= kind :hit)   (assoc :normal [nx ny] :point [px py] :speed extra))))
+           (range (min total EVENT-CAP)))}))
+
+(defn- step-events
+  "All three kinds from the last step: {:begin [..] :end [..] :hit [..] :dropped n}."
+  [w]
+  (let [r {:begin (read-events w f/EVENTS-BEGIN :begin)
+           :end   (read-events w f/EVENTS-END :end)
+           :hit   (read-events w f/EVENTS-HIT :hit)}]
+    {:begin   (:events (:begin r))
+     :end     (:events (:end r))
+     :hit     (:events (:hit r))
+     :dropped (reduce + (map :dropped (vals r)))}))
+
+(defn- collect-events!
+  "Adds the last step's events to the ones waiting for contact-events."
+  [w]
+  (let [new (step-events w)]
+    (when (or (seq (:begin new)) (seq (:end new)) (seq (:hit new)) (pos? (:dropped new)))
+      (swap! (:events w)
+             (fn [pending]
+               (reduce (fn [p k]
+                         (let [room (- MAX-PENDING (count (get p k)))
+                               evs  (get new k)]
+                           (-> p
+                               (update k into (take (max 0 room)) evs)
+                               (update :dropped + (max 0 (- (count evs) (max 0 room)))))))
+                       (update pending :dropped + (:dropped new))
+                       [:begin :end :hit]))))))
+
+(defn contact-events
+  "Contact events as plain data:
+    {:begin   [{:body-a :body-b :name-a :name-b :user-a :user-b :shape-a :shape-b
+                :normal [nx ny] :point [x y] :points n}]   ; started touching
+     :end     [{...ids, names and user data only}]        ; stopped touching
+     :hit     [{...  :normal [nx ny] :point [x y] :speed s}] ; hit hard enough
+     :dropped n}                                          ; lost to the caps
+  :normal points from a to b. :speed is how fast they were approaching, in
+  m/s. A body in an :end event may have been destroyed already (its id is
+  then 0).
+
+  With :collect-events? on (the default) this returns everything since the
+  last call, over however many steps, and clears it. With it off it returns
+  the last step's events. Only shapes with :contact-events? / :hit-events?
+  report (either shape of a pair is enough)."
+  [w]
+  (live! w)
+  (if (:collect-events? w)
+    (let [[old _] (reset-vals! (:events w) no-events)] old)
+    (step-events w)))
+
+(defn events-for
+  "The events in a contact-events kind (e.g. (:hit events)) that involve
+  body (a name or id), turned around so the body is always the subject:
+  each gets :other, :other-name and :other-user, and :normal (if any) points
+  from the other body into this one, as in contacts."
+  [w events body]
+  (let [id (body-id w body)]
+    (into []
+          (keep (fn [{:keys [body-a body-b normal] :as e}]
+                  (cond
+                    (= id body-b) (assoc e :other body-a :other-name (:name-a e) :other-user (:user-a e))
+                    (= id body-a) (cond-> (assoc e :other body-b :other-name (:name-b e)
+                                                 :other-user (:user-b e))
+                                    normal (assoc :normal (mapv - normal))))))
+          events)))
 
 ;; --- inspection --------------------------------------------------------------
 

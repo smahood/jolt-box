@@ -14,10 +14,11 @@ static b2Rot jb2_rot(double angle)
 
 /* --- worlds --------------------------------------------------------------- */
 
-uint32_t jb2_world_create(double gx, double gy)
+uint32_t jb2_world_create(double gx, double gy, double hit_threshold)
 {
 	b2WorldDef def = b2DefaultWorldDef();
 	def.gravity = (b2Vec2){ (float)gx, (float)gy };
+	if (hit_threshold >= 0.0) def.hitEventThreshold = (float)hit_threshold;
 	def.workerCount = 1;
 	return b2StoreWorldId(b2CreateWorld(&def));
 }
@@ -106,7 +107,8 @@ uint64_t jb2_body_user_data(uint64_t body)
 /* --- shapes --------------------------------------------------------------- */
 
 uint64_t jb2_body_add_box(uint64_t body, double half_w, double half_h, double ox, double oy,
-                          double angle, double density, double friction, double restitution)
+                          double angle, double density, double friction, double restitution,
+                          int flags)
 {
 	if (!jb2_body_is_valid(body)) return 0;
 	if (!(half_w > 0.0) || !(half_h > 0.0)) return 0;
@@ -114,6 +116,8 @@ uint64_t jb2_body_add_box(uint64_t body, double half_w, double half_h, double ox
 	sd.density = (float)density;
 	sd.material.friction = (float)friction;
 	sd.material.restitution = (float)restitution;
+	sd.enableContactEvents = (flags & JB2_SHAPE_CONTACT_EVENTS) != 0;
+	sd.enableHitEvents = (flags & JB2_SHAPE_HIT_EVENTS) != 0;
 	b2Polygon box = b2MakeOffsetBox((float)half_w, (float)half_h,
 	                                (b2Vec2){ (float)ox, (float)oy }, jb2_rot(angle));
 	return b2StoreShapeId(b2CreatePolygonShape(b2LoadBodyId(body), &sd, &box));
@@ -222,4 +226,122 @@ int jb2_body_contacts(uint64_t body, uint64_t *ids_out, double *data_out, int ca
 		d[5] = sep;
 	}
 	return n;
+}
+
+int jb2_body_mass_data(uint64_t body, double *out)
+{
+	if (!jb2_body_is_valid(body)) return JB2_BAD_ID;
+	b2BodyId id = b2LoadBodyId(body);
+	b2MassData md = b2Body_GetMassData(id);
+	b2Vec2 wc = b2Body_GetWorldCenterOfMass(id);
+	out[0] = md.mass;
+	out[1] = md.rotationalInertia;
+	out[2] = md.center.x;
+	out[3] = md.center.y;
+	out[4] = wc.x;
+	out[5] = wc.y;
+	return JB2_OK;
+}
+
+/* --- shape settings ------------------------------------------------------- */
+
+int jb2_shape_is_valid(uint64_t shape)
+{
+	return shape != 0 && b2Shape_IsValid(b2LoadShapeId(shape));
+}
+
+uint64_t jb2_shape_body(uint64_t shape)
+{
+	if (!jb2_shape_is_valid(shape)) return 0;
+	return b2StoreBodyId(b2Shape_GetBody(b2LoadShapeId(shape)));
+}
+
+int jb2_shape_set_friction(uint64_t shape, double friction)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2Shape_SetFriction(b2LoadShapeId(shape), (float)friction);
+	return JB2_OK;
+}
+
+int jb2_shape_set_restitution(uint64_t shape, double restitution)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2Shape_SetRestitution(b2LoadShapeId(shape), (float)restitution);
+	return JB2_OK;
+}
+
+int jb2_shape_set_density(uint64_t shape, double density)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2Shape_SetDensity(b2LoadShapeId(shape), (float)density, true);
+	return JB2_OK;
+}
+
+int jb2_shape_enable_contact_events(uint64_t shape, int enable)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2Shape_EnableContactEvents(b2LoadShapeId(shape), enable != 0);
+	return JB2_OK;
+}
+
+int jb2_shape_enable_hit_events(uint64_t shape, int enable)
+{
+	if (!jb2_shape_is_valid(shape)) return JB2_BAD_ID;
+	b2Shape_EnableHitEvents(b2LoadShapeId(shape), enable != 0);
+	return JB2_OK;
+}
+
+/* --- contact events ------------------------------------------------------- */
+
+static void jb2_event_ids(b2ShapeId a, b2ShapeId b, uint64_t *ids)
+{
+	ids[0] = b2StoreShapeId(a);
+	ids[1] = b2StoreShapeId(b);
+	ids[2] = b2Shape_IsValid(a) ? b2StoreBodyId(b2Shape_GetBody(a)) : 0;
+	ids[3] = b2Shape_IsValid(b) ? b2StoreBodyId(b2Shape_GetBody(b)) : 0;
+}
+
+int jb2_world_contact_events(uint32_t world, int kind, uint64_t *ids_out, double *data_out, int cap)
+{
+	if (!jb2_world_is_valid(world)) return JB2_BAD_ID;
+	b2ContactEvents ev = b2World_GetContactEvents(b2LoadWorldId(world));
+	int total = kind == JB2_EVENTS_BEGIN ? ev.beginCount
+	          : kind == JB2_EVENTS_END   ? ev.endCount
+	          : kind == JB2_EVENTS_HIT   ? ev.hitCount : 0;
+	int n = total < cap ? total : cap;
+	for (int i = 0; i < n; ++i)
+	{
+		uint64_t *ids = ids_out + i * JB2_EVENT_IDS;
+		double *d = data_out + i * JB2_EVENT_DOUBLES;
+		d[0] = d[1] = d[2] = d[3] = d[4] = 0.0;
+		if (kind == JB2_EVENTS_BEGIN)
+		{
+			const b2ContactBeginTouchEvent *e = &ev.beginEvents[i];
+			jb2_event_ids(e->shapeIdA, e->shapeIdB, ids);
+			d[0] = e->manifold.normal.x;
+			d[1] = e->manifold.normal.y;
+			if (e->manifold.pointCount > 0)
+			{
+				d[2] = e->manifold.points[0].point.x;
+				d[3] = e->manifold.points[0].point.y;
+			}
+			d[4] = e->manifold.pointCount;
+		}
+		else if (kind == JB2_EVENTS_END)
+		{
+			const b2ContactEndTouchEvent *e = &ev.endEvents[i];
+			jb2_event_ids(e->shapeIdA, e->shapeIdB, ids);
+		}
+		else
+		{
+			const b2ContactHitEvent *e = &ev.hitEvents[i];
+			jb2_event_ids(e->shapeIdA, e->shapeIdB, ids);
+			d[0] = e->normal.x;
+			d[1] = e->normal.y;
+			d[2] = e->point.x;
+			d[3] = e->point.y;
+			d[4] = e->approachSpeed;
+		}
+	}
+	return total;
 }

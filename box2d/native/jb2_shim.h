@@ -19,8 +19,9 @@
 #define JB2_OK 0
 #define JB2_BAD_ID (-1)
 
-/* worlds: single-threaded (workerCount 1) */
-uint32_t jb2_world_create(double gx, double gy);
+/* worlds: single-threaded (workerCount 1). hit_threshold is the approach
+ * speed (m/s) above which hits are reported; negative keeps Box2D's default. */
+uint32_t jb2_world_create(double gx, double gy, double hit_threshold);
 int jb2_world_destroy(uint32_t world);
 int jb2_world_is_valid(uint32_t world);
 int jb2_world_step(uint32_t world, double dt, int substeps);
@@ -40,9 +41,24 @@ int jb2_body_mass_info(uint64_t body, double *out);
 
 uint64_t jb2_body_user_data(uint64_t body); /* 0 if invalid */
 
-/* shapes. Returns the shape id, 0 if the body is invalid. Mass is updated. */
+/* Writes 6 doubles: mass, rotational inertia (about the center of mass),
+ * local center x y, world center x y. */
+int jb2_body_mass_data(uint64_t body, double *out);
+
+/* shapes. flags: JB2_SHAPE_* bits. Returns the shape id, 0 if the body is
+ * invalid or the box degenerate. Mass is updated. */
+#define JB2_SHAPE_CONTACT_EVENTS 1
+#define JB2_SHAPE_HIT_EVENTS 2
 uint64_t jb2_body_add_box(uint64_t body, double half_w, double half_h, double ox, double oy,
-                          double angle, double density, double friction, double restitution);
+                          double angle, double density, double friction, double restitution,
+                          int flags);
+int jb2_shape_is_valid(uint64_t shape);
+uint64_t jb2_shape_body(uint64_t shape); /* 0 if invalid */
+int jb2_shape_set_friction(uint64_t shape, double friction);
+int jb2_shape_set_restitution(uint64_t shape, double restitution);
+int jb2_shape_set_density(uint64_t shape, double density); /* and updates the body's mass */
+int jb2_shape_enable_contact_events(uint64_t shape, int enable);
+int jb2_shape_enable_hit_events(uint64_t shape, int enable);
 
 /* body motion. All return JB2_OK or JB2_BAD_ID. Impulses and forces are in
  * world space; at_point 0 applies at the center of mass, 1 at (px, py). */
@@ -67,5 +83,21 @@ int jb2_body_set_damping(uint64_t body, double linear, double angular);
 #define JB2_MAX_CONTACTS 64
 #define JB2_CONTACT_DOUBLES 6
 int jb2_body_contacts(uint64_t body, uint64_t *ids_out, double *data_out, int cap);
+
+/* Contact events from the last step. kind: JB2_EVENTS_*. Copies up to cap
+ * events and returns how many there were in total (which can be more than
+ * cap), or JB2_BAD_ID. For event i:
+ *   ids_out[i*4 ..]  shape a, shape b, body a, body b (a body is 0 if its
+ *                    shape has since been destroyed, as end events can be)
+ *   data_out[i*5 ..] nx ny px py extra
+ *     begin: normal (from a to b), first manifold point, extra = point count
+ *     end:   all 0
+ *     hit:   normal (from a to b), point, extra = approach speed (m/s) */
+#define JB2_EVENTS_BEGIN 0
+#define JB2_EVENTS_END 1
+#define JB2_EVENTS_HIT 2
+#define JB2_EVENT_IDS 4
+#define JB2_EVENT_DOUBLES 5
+int jb2_world_contact_events(uint32_t world, int kind, uint64_t *ids_out, double *data_out, int cap);
 
 #endif

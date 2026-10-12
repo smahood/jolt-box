@@ -289,3 +289,123 @@
       (let [crate (first (filter #(= :crate (:name %)) (b2/debug-shapes w)))]
         (is (near? (second (:center crate)) 1.4 0.01))
         (is (false? (:awake? crate)) "asleep once settled")))))
+
+;; --- step 3: contact events, mass and momentum ----------------------------------
+
+(defn- drop-crate!
+  "A crate whose bottom starts `height` m above the floor's top (1.9)."
+  [w height & {:as shape-opts}]
+  (b2/body! w :crate {:type :dynamic :pos [0 (- 1.4 height)] :user-data 7
+                      :shapes [(merge {:box [0.5 0.5]} shape-opts)]}))
+
+(deftest hit-events-measure-impact-speed
+  (let [hit-speed (fn [height]
+                    (b2/with-world [w]
+                      (floor! w)
+                      (drop-crate! w height :hit-events? true)
+                      (b2/simulate w 2.0)
+                      (:speed (first (:hit (b2/contact-events w))))))
+        low  (hit-speed 0.5)
+        high (hit-speed 2.0)]
+    ;; v = sqrt(2gh)
+    (is (near? low (Math/sqrt (* 2 9.8 0.5)) 0.2) (str "0.5 m drop hits at ~3.1 m/s, got " low))
+    (is (near? high (Math/sqrt (* 2 9.8 2.0)) 0.3) (str "2 m drop hits at ~6.3 m/s, got " high))
+    (is (> high low))))
+
+(deftest begin-and-end-events
+  (b2/with-world [w]
+    (floor! w)
+    (drop-crate! w 0.5 :contact-events? true)
+    (b2/simulate w 1.5)
+    (let [{:keys [begin end hit]} (b2/contact-events w)
+          e (first begin)]
+      (is (= 1 (count begin)) "landing starts one contact")
+      (is (= [] end))
+      (is (= [] hit) "hit events weren't asked for")
+      (is (= #{:floor :crate} (set [(:name-a e) (:name-b e)])))
+      (is (= #{0 7} (set [(:user-a e) (:user-b e)])) "user data rides along")
+      (is (= 2 (:points e))))
+    (is (= {:begin [] :end [] :hit [] :dropped 0} (b2/contact-events w))
+        "contact-events clears what it returns")
+    (b2/impulse! w :crate [0 -5])
+    (b2/simulate w 0.3)
+    (is (= 1 (count (:end (b2/contact-events w)))) "jumping off ends it")))
+
+(deftest events-for-turns-events-around
+  (b2/with-world [w]
+    (floor! w)
+    (drop-crate! w 0.5 :hit-events? true)
+    (b2/simulate w 1.5)
+    (let [hits (:hit (b2/contact-events w))
+          [crate-view] (b2/events-for w hits :crate)
+          [floor-view] (b2/events-for w hits :floor)]
+      (is (= :floor (:other-name crate-view)))
+      (is (= 0 (:other-user crate-view)))
+      (is (near? (second (:normal crate-view)) -1.0 1e-3) "from the floor up into the crate")
+      (is (= :crate (:other-name floor-view)))
+      (is (= 7 (:other-user floor-view)))
+      (is (near? (second (:normal floor-view)) 1.0 1e-3) "from the crate down into the floor")
+      (is (= [] (b2/events-for w hits (b2/body! w {:shapes [{:box [1 1]}]})))))))
+
+(deftest events-collect-across-steps
+  (testing "step-fixed! running several steps in one call loses nothing"
+    (b2/with-world [w {:max-steps 100}]
+      (floor! w)
+      (drop-crate! w 0.5 :hit-events? true :contact-events? true)
+      (b2/step-fixed! w 1.0)                           ; 60 steps, the landing in the middle
+      (let [{:keys [begin hit]} (b2/contact-events w)]
+        (is (= 1 (count begin)))
+        (is (= 1 (count hit))))))
+  (testing "with :collect-events? false, only the last step's events"
+    (b2/with-world [w {:collect-events? false :max-steps 100}]
+      (floor! w)
+      (drop-crate! w 0.5 :hit-events? true)
+      (b2/step-fixed! w 1.0)
+      (is (= [] (:hit (b2/contact-events w))) "the landing was steps ago")))
+  (testing "the hit threshold"
+    (b2/with-world [w {:hit-event-threshold 4.0}]
+      (floor! w)
+      (drop-crate! w 0.5 :hit-events? true)          ; lands at ~3.1 m/s
+      (b2/simulate w 1.5)
+      (is (= [] (:hit (b2/contact-events w)))))))
+
+(deftest mass-and-momentum
+  (b2/with-world [w]
+    (b2/body! w :b {:type :dynamic :pos [1 2]
+                    :shapes [{:box [0.5 0.5] :offset [1 0] :density 2}]})
+    (let [{:keys [mass center local-center inertia]} (b2/mass-data w :b)]
+      (is (near? mass 2.0 1e-4))
+      (is (= 2.0 (b2/mass w :b)))
+      (is (pos? inertia))
+      (is (near? (first local-center) 1.0 1e-5) "the centre of mass is the shape's centre")
+      (is (near? (first center) 2.0 1e-5))
+      (is (near? (second center) 2.0 1e-5)))
+    (b2/set-velocity! w :b [3 -1])
+    (is (= {:px 6.0 :py -2.0} (b2/momentum w :b)))
+    (is (= 0.0 (b2/mass w (b2/body! w {:shapes [{:box [1 1]}]}))) "static bodies have no mass")))
+
+(deftest shape-settings
+  (b2/with-world [w]
+    (floor! w)
+    (drop-crate! w 1.0)
+    (let [[s] (b2/shapes w :crate)]
+      (is (= (:id (b2/body-info w :crate)) (b2/shape-body w s)))
+      (testing "density changes the mass"
+        (b2/set-shape! w s {:density 3})
+        (is (near? (b2/mass w :crate) 3.0 1e-4)))
+      (testing "restitution makes it bounce"
+        (b2/set-shape! w s {:restitution 0.8})
+        (b2/set-shape! w (first (b2/shapes w :floor)) {:restitution 0.8})
+        (let [samples (b2/simulate w 1.0 {:sample [:crate]})]
+          (is (some #(neg? (get-in % [:crate :vy])) (drop 30 samples)) "goes back up")))
+      (testing "hit events can be turned on later"
+        (b2/contact-events w)
+        (b2/set-shape! w s {:hit-events? true :restitution 0 :friction 0.2})
+        (b2/set-transform! w :crate [0 0])
+        (b2/simulate w 1.0)
+        (is (= 1 (count (:hit (b2/contact-events w)))))))
+    (testing "stale shapes throw"
+      (let [[s] (b2/shapes w :crate)]
+        (b2/destroy-body! w :crate)
+        (is (thrown-ex-info? #(b2/set-shape! w s {:friction 1})))
+        (is (thrown-ex-info? #(b2/shape-body w s)))))))

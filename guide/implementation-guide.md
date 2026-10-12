@@ -531,7 +531,39 @@ The output maps stay the same.
 *Acceptance:* in the game, the outlines match the drawn toilet and walls, and
 follow the toilet as it hops.
 
-### Step 3: contact events, user data and momentum (wall damage)
+### Step 3: contact events, user data and momentum (wall damage) ✅ done
+
+*What changed while building it:*
+- **Events are collected after every step** (world option `:collect-events?`,
+  on by default) and `contact-events` returns everything since the last call.
+  Box2D only keeps the last step's events, and `step-fixed!` can run several
+  steps in one frame, so reading them once a frame would lose some. Each kind
+  is capped (4096 waiting, 512 per step) with a `:dropped` count.
+- **Event maps carry body ids, names and user data for both sides**
+  (`:body-a :name-a :user-a`, and `-b`), plus the shape ids, rather than only
+  user data. `events-for` turns a list around so one body is the subject
+  (`:other :other-name :other-user`, with `:normal` pointing into it, as in
+  `contacts`). User data and names come from the registry, so they're still
+  there in an `:end` event after a body was destroyed.
+- `make-world` takes `:hit-event-threshold` (m/s, default Box2D's 1.0).
+- Shape specs take `:contact-events?` / `:hit-events?` (both off by default,
+  as in Box2D; either shape of a pair is enough).
+- The shim batch also covers the rest of the shape settings, so Step 6's
+  density slider needs no rebuild: `set-shape!` with `:friction`
+  `:restitution` `:density` (updates the mass) and the two event flags, plus
+  `shapes`, `shape-body`, `mass-data` (`:center` world, `:local-center`,
+  `:inertia`), `mass` and `momentum` (`{:px :py}`).
+- `set-transform!` documents that contacts lag a step after a teleport (the
+  same lag as in Step 1).
+
+*In the game:* a wall's damage is `floor(momentum / MOMENTUM-PER-HP)`, with
+the momentum being toilet mass × approach speed from the hit event, and
+`MOMENTUM-PER-HP` 2.0 kg·m/s in `config`. A full-speed hop (about 2.8)
+knocks off one hitpoint and bounces back (`physics/bounce!`), so the dirt wall
+still takes two hops, the same as the old movement. A gentle bump (1.6) does
+nothing, and a toilet of twice the mass breaks it in one hop. The `Hit`
+component got a `:damage` field; the old movement always uses 1. The value is
+in config, not yet a dev-panel control.
 
 Covers the "momentum calculations" goal. Wall damage comes from how hard
 something hits, not a fixed hit count.

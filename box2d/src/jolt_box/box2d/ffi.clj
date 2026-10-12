@@ -6,7 +6,7 @@
   (:require [jolt.ffi :as ffi]))
 
 ;; --- worlds -------------------------------------------------------------------
-(ffi/defcfn world-create   "jb2_world_create"   [:double :double] :uint32)
+(ffi/defcfn world-create   "jb2_world_create"   [:double :double :double] :uint32)
 (ffi/defcfn world-destroy  "jb2_world_destroy"  [:uint32] :int)
 (ffi/defcfn world-valid    "jb2_world_is_valid" [:uint32] :int)
 (ffi/defcfn world-step     "jb2_world_step"     [:uint32 :double :int] :int)
@@ -22,7 +22,17 @@
 
 ;; --- shapes -------------------------------------------------------------------
 (ffi/defcfn body-add-box   "jb2_body_add_box"
-  [:uint64 :double :double :double :double :double :double :double :double] :uint64)
+  [:uint64 :double :double :double :double :double :double :double :double :int] :uint64)
+(def SHAPE-CONTACT-EVENTS 1)   ; JB2_SHAPE_* flag bits
+(def SHAPE-HIT-EVENTS 2)
+(ffi/defcfn shape-valid    "jb2_shape_is_valid" [:uint64] :int)
+(ffi/defcfn shape-body     "jb2_shape_body"     [:uint64] :uint64)
+(ffi/defcfn shape-set-friction    "jb2_shape_set_friction"    [:uint64 :double] :int)
+(ffi/defcfn shape-set-restitution "jb2_shape_set_restitution" [:uint64 :double] :int)
+(ffi/defcfn shape-set-density     "jb2_shape_set_density"     [:uint64 :double] :int)
+(ffi/defcfn shape-enable-contact-events "jb2_shape_enable_contact_events" [:uint64 :int] :int)
+(ffi/defcfn shape-enable-hit-events     "jb2_shape_enable_hit_events"     [:uint64 :int] :int)
+(ffi/defcfn body-mass-data "jb2_body_mass_data" [:uint64 :pointer] :int)
 
 ;; --- body motion --------------------------------------------------------------
 (ffi/defcfn body-apply-impulse "jb2_body_apply_impulse"
@@ -40,3 +50,12 @@
 (def MAX-CONTACTS 64)       ; JB2_MAX_CONTACTS
 (def CONTACT-DOUBLES 6)     ; JB2_CONTACT_DOUBLES
 (ffi/defcfn body-contacts "jb2_body_contacts" [:uint64 :pointer :pointer :int] :int)
+
+;; --- contact events -----------------------------------------------------------
+(def EVENTS-BEGIN 0)        ; JB2_EVENTS_*
+(def EVENTS-END 1)
+(def EVENTS-HIT 2)
+(def EVENT-IDS 4)           ; JB2_EVENT_IDS
+(def EVENT-DOUBLES 5)       ; JB2_EVENT_DOUBLES
+(ffi/defcfn world-contact-events "jb2_world_contact_events"
+  [:uint32 :int :pointer :pointer :int] :int)
