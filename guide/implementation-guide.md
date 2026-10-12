@@ -762,6 +762,16 @@ the floor, so the hop comes out of the physics.
   `:tuning`, and `physics/tune!` only applies what changed.
 - Known quirk: right after some landings the toilet lifts 1–2 px for a
   few frames as the head's momentum settles into the neck's slider.
+- *Later change (game only):* Up/Down now **grow** the neck instead of
+  sliding it out of the bowl (a raised periscope neck floated above the
+  bowl). It telescopes: a lower piece hinged to the bowl at the water line
+  and an upper piece on a prismatic joint whose `:limit [len len]` is moved
+  to the neck's length; limits held the head far more firmly than a spring
+  did. The base hinge's spring is re-derived from the current length
+  (`neck-hertz` takes the lever), so a 160 px neck holds a 1 kg head up. The
+  neck sways straight rather than curving: a curvy neck that also grows
+  needs moving joint anchors at runtime (`b2Joint_SetLocalAnchorA/B`), a
+  small shim addition for later.
 
 *Library additions*
 - `:revolute` joints: `:spring`, `:limit [lo hi]` angles, `:motor`,
