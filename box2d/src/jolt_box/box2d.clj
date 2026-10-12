@@ -400,6 +400,59 @@
    :max-steps (:max-steps w)
    :bodies    (mapv #(body-info w (:id %)) (bodies w))})
 
+;; --- debug outlines ----------------------------------------------------------
+;; Built in Clojure from the registry's shape specs and each body's transform,
+;; so it can change live at the REPL. Box2D's own b2DebugDraw passes structs by
+;; value to its callbacks, which jolt can't receive; if this gets slow with
+;; many bodies, the shim can collect those callbacks into a buffer instead and
+;; this keeps returning the same maps (guide, step 2).
+
+(defn- rotate [[x y] c s] [(- (* c x) (* s y)) (+ (* s x) (* c y))])
+
+(defn- box-points
+  "The four corners of a :box shape spec, in world space, for a body at
+  (bx, by) turned by angle ba. Counter-clockwise in y-up, so clockwise on a
+  y-down screen."
+  [{:keys [box offset angle] :or {offset [0 0] angle 0}} bx by ba]
+  (let [[hw hh] box
+        [ox oy] offset
+        sc (Math/cos angle) ss (Math/sin angle)
+        bc (Math/cos ba)    bs (Math/sin ba)]
+    (mapv (fn [corner]
+            (let [[lx ly] (rotate corner sc ss)
+                  [wx wy] (rotate [(+ lx ox) (+ ly oy)] bc bs)]
+              [(+ bx wx) (+ by wy)]))
+          [[(- hw) (- hh)] [hw (- hh)] [hw hh] [(- hw) hh]])))
+
+(defn- awake-and-type
+  "[awake? type] for body id, from one mass-info read."
+  [w id]
+  (let [buf (:state (:scratch w))]
+    (check! (f/body-mass-info id buf) :debug-shapes {:body id})
+    (let [[_ _ awake type-n] (c/read-doubles buf 4)]
+      [(== 1.0 awake) (body-type-names (long type-n))])))
+
+(defn debug-shapes
+  "Every shape in w as plain data for drawing, in world units:
+  {:kind :polygon :points [[x y] ...] :center [x y]
+   :body id :name name :shape id :type :static|:kinematic|:dynamic :awake? bool}.
+  Draw the points as a closed loop. No drawing happens here: the caller
+  (e.g. raylib on the main thread) does that."
+  [w]
+  (live! w)
+  (into []
+        (mapcat
+         (fn [[id {body-name :name :keys [spec shapes]}]]
+           (let [{:keys [x y angle]} (transform w id)
+                 [awake? type]       (awake-and-type w id)]
+             (mapv (fn [shape-spec sid]
+                     (cond-> {:body id :name body-name :shape sid
+                              :type type :awake? awake? :center [x y]}
+                       (:box shape-spec) (assoc :kind :polygon
+                                                :points (box-points shape-spec x y angle))))
+                   (:shapes spec) shapes))))
+        (c/entries @(:registry w) :body)))
+
 ;; --- headless simulation -----------------------------------------------------
 
 (defn simulate

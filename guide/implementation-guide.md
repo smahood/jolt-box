@@ -491,7 +491,20 @@ static wall. Step 3 adds that.
 - at the REPL: `(game.sim/send! #(b2/body-info (:b2 %) :toilet))` shows the
   toilet's live state
 
-### Step 2: debug outlines
+### Step 2: debug outlines ✅ done
+
+*What changed while building it:*
+- No shim changes, so no rebuild and no REPL restart. Everything is in
+  Clojure: the registry's shape specs plus each body's `transform`, and one
+  `mass-info` read per body for `:awake?` and `:type`.
+- Each map also carries `:center` (the body's position) and `:shape` (the
+  shape id), which the game uses to draw a dot at each body's centre.
+- In the game, F7 toggles the outlines (static grey, moving green, asleep
+  blue). The sim converts them to pixels and puts them in the snapshot only
+  while they're on, so they cost nothing otherwise.
+- While the hand-written movement is on, the game keeps the toilet's body on
+  the drawn toilet (`game.physics/follow!`), so its outline is right in both
+  modes and a switch to Box2D starts from the right place.
 
 Seeing the shapes you just made matters most while tuning, so this comes
 early.

@@ -249,3 +249,43 @@
       (doseq [f [#(b2/impulse! w b [0 1]) #(b2/force! w b [0 1]) #(b2/set-velocity! w b [0 0])
                  #(b2/set-transform! w b [0 0] 0) #(b2/contacts w b) #(b2/grounded? w b)]]
         (is (thrown-ex-info? f))))))
+
+;; --- step 2: debug outlines -----------------------------------------------------
+
+(defn- points-near? [as bs tol]
+  (and (= (count as) (count bs))
+       (every? true? (map (fn [[ax ay] [bx by]] (and (near? ax bx tol) (near? ay by tol))) as bs))))
+
+(deftest debug-shapes-boxes
+  (b2/with-world [w]
+    (b2/body! w :floor {:pos [0 2] :shapes [{:box [10 0.1]}]})
+    (b2/body! w :crate {:type :dynamic :pos [1 0] :shapes [{:box [0.5 0.25]}]})
+    (let [shapes (b2/debug-shapes w)
+          by-name (into {} (map (juxt :name identity)) shapes)]
+      (is (plain? shapes))
+      (is (= 2 (count shapes)))
+      (is (points-near? (:points (by-name :floor)) [[-10 1.9] [10 1.9] [10 2.1] [-10 2.1]] 1e-6))
+      (is (points-near? (:points (by-name :crate)) [[0.5 -0.25] [1.5 -0.25] [1.5 0.25] [0.5 0.25]] 1e-6))
+      (is (= {:kind :polygon :type :static :awake? false}
+             (select-keys (by-name :floor) [:kind :type :awake?])))
+      (is (= {:type :dynamic :awake? true} (select-keys (by-name :crate) [:type :awake?])))
+      (is (= (first (:shapes (b2/body-info w :crate))) (:shape (by-name :crate))))))
+  (testing "turned bodies and offset, turned shapes"
+    (b2/with-world [w]
+      (let [half-pi (/ Math/PI 2)]
+        (b2/body! w :b {:pos [1 1] :angle half-pi
+                        :shapes [{:box [0.5 0.1] :offset [1 0]}]})
+        ;; the shape's centre is 1 m along the body's x axis, which now points along +y
+        (is (points-near? (:points (first (b2/debug-shapes w)))
+                          [[1.1 1.5] [1.1 2.5] [0.9 2.5] [0.9 1.5]] 1e-5))
+        (b2/body! w :b {:pos [0 0] :shapes [{:box [0.5 0.1] :angle half-pi}]})
+        (is (points-near? (:points (first (b2/debug-shapes w)))
+                          [[0.1 -0.5] [0.1 0.5] [-0.1 0.5] [-0.1 -0.5]] 1e-5)))))
+  (testing "outlines follow the body and show sleep"
+    (b2/with-world [w]
+      (b2/body! w :floor {:pos [0 2] :shapes [{:box [10 0.1]}]})
+      (crate! w)
+      (b2/simulate w 3.0)
+      (let [crate (first (filter #(= :crate (:name %)) (b2/debug-shapes w)))]
+        (is (near? (second (:center crate)) 1.4 0.01))
+        (is (false? (:awake? crate)) "asleep once settled")))))

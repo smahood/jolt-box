@@ -45,7 +45,7 @@ jolt test     # headless tests
 ;=> [{:x ~0.0 :y ~1.4 :angle ~0.0} 1.0]   resting on the floor after a second
 ```
 
-## API (box2d, steps 0–1)
+## API (box2d, steps 0–2)
 
 Meters, kilograms, seconds, radians. Anywhere a body id goes, a keyword
 name works too. Re-evaluating a named `body!` replaces the old body.
@@ -68,6 +68,7 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(grounded? w body)`, `(grounded? w body {:min-normal :max-separating-speed})` | standing on something, against gravity |
 | `(gravity w)` | `[gx gy]` |
 | `(bodies w)`, `(body-info w body)`, `(snapshot w)` | inspection, as plain data |
+| `(debug-shapes w)` | `[{:kind :polygon :points [[x y] ...] :center [x y] :body :name :shape :type :awake?}]`, for drawing outlines |
 | `(simulate w seconds {:sample [bodies] :every dt})` | step and sample, for the REPL and tests |
 | `(series s body field)`, `(extent ...)`, `(period ...)`, `(settled-at s body)` | measuring samples |
 
