@@ -22,13 +22,19 @@
 
 ;; --- scratch buffers ---------------------------------------------------------
 
+(defn read-doubles-at
+  "n doubles of buffer buf starting at double index start, as a realized
+  vector."
+  [buf start n]
+  (loop [i 0 acc (transient [])]
+    (if (< i n)
+      (recur (inc i) (conj! acc (ffi/read buf :double (* 8 (+ start i)))))
+      (persistent! acc))))
+
 (defn read-doubles
   "The first n doubles of buffer buf, as a realized vector."
   [buf n]
-  (loop [i 0 acc (transient [])]
-    (if (< i n)
-      (recur (inc i) (conj! acc (ffi/read buf :double (* 8 i))))
-      (persistent! acc))))
+  (read-doubles-at buf 0 n))
 
 ;; --- registry ----------------------------------------------------------------
 

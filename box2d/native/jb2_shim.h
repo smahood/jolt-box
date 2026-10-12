@@ -44,4 +44,28 @@ uint64_t jb2_body_user_data(uint64_t body); /* 0 if invalid */
 uint64_t jb2_body_add_box(uint64_t body, double half_w, double half_h, double ox, double oy,
                           double angle, double density, double friction, double restitution);
 
+/* body motion. All return JB2_OK or JB2_BAD_ID. Impulses and forces are in
+ * world space; at_point 0 applies at the center of mass, 1 at (px, py). */
+int jb2_body_apply_impulse(uint64_t body, double ix, double iy, int at_point, double px, double py,
+                           int wake);
+int jb2_body_apply_force(uint64_t body, double fx, double fy, int at_point, double px, double py,
+                         int wake);
+int jb2_body_set_velocity(uint64_t body, double vx, double vy);
+int jb2_body_set_angular_velocity(uint64_t body, double w);
+int jb2_body_set_transform(uint64_t body, double x, double y, double angle); /* a teleport */
+int jb2_body_set_awake(uint64_t body, int awake);
+int jb2_body_set_gravity_scale(uint64_t body, double scale);
+int jb2_body_set_damping(uint64_t body, double linear, double angular);
+
+/* Touching contacts of a body, up to cap (at most JB2_MAX_CONTACTS). For each
+ * contact i, ids_out[i] is the other body and data_out[i*6 ..] holds:
+ *   nx ny     the normal, pointing from the other body into this one
+ *   points    manifold point count (0..2)
+ *   px py     the first point's world position (0 0 if none)
+ *   sep       the smallest point separation (negative = overlapping)
+ * Returns the number written, or JB2_BAD_ID. */
+#define JB2_MAX_CONTACTS 64
+#define JB2_CONTACT_DOUBLES 6
+int jb2_body_contacts(uint64_t body, uint64_t *ids_out, double *data_out, int cap);
+
 #endif

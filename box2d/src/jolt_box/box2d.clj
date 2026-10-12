@@ -65,14 +65,17 @@
      (when (zero? id)
        (throw (ex-info "Box2D couldn't create a world (too many worlds?)" {:gravity gravity})))
      (->World id gravity (atom true) (atom c/empty-registry)
-              (ffi/alloc 64) (atom 0.0) max-steps))))
+              {:state (ffi/alloc 64)                                   ; one body's numbers
+               :ids   (ffi/alloc (* 8 f/MAX-CONTACTS))                 ; contact body ids
+               :data  (ffi/alloc (* 8 f/CONTACT-DOUBLES f/MAX-CONTACTS))}
+              (atom 0.0) max-steps))))
 
 (defn destroy!
   "Releases world w and everything in it. Safe to call more than once."
   [w]
   (when (compare-and-set! (:alive w) true false)
     (f/world-destroy (:id w))
-    (ffi/free (:scratch w))
+    (run! ffi/free (vals (:scratch w)))
     (reset! (:registry w) c/empty-registry))
   nil)
 
@@ -193,7 +196,7 @@
   "[x y angle vx vy w] for body name-or-id."
   [w name-or-id]
   (let [id  (body-id w name-or-id)
-        buf (:scratch w)]
+        buf (:state (:scratch w))]
     (check! (f/body-read id buf) :read {:body name-or-id})
     (c/read-doubles buf 6)))
 
@@ -215,6 +218,147 @@
   (let [[x y a vx vy av] (read-state w name-or-id)]
     {:x x :y y :angle a :vx vx :vy vy :w av}))
 
+;; --- moving bodies -----------------------------------------------------------
+
+(defn impulse!
+  "Applies a world-space impulse [ix iy] (N·s, so a change in velocity of
+  impulse / mass) at the center of mass, or at world point [px py]. Wakes the
+  body."
+  ([w body [ix iy]]
+   (check! (f/body-apply-impulse (body-id w body) (double ix) (double iy) 0 0.0 0.0 1)
+           :impulse! {:body body})
+   nil)
+  ([w body [ix iy] [px py]]
+   (check! (f/body-apply-impulse (body-id w body) (double ix) (double iy)
+                                 1 (double px) (double py) 1)
+           :impulse! {:body body})
+   nil))
+
+(defn force!
+  "Applies a world-space force [fx fy] (N) for the next step, at the center of
+  mass or at world point [px py]. Wakes the body. Call it every step for a
+  steady push."
+  ([w body [fx fy]]
+   (check! (f/body-apply-force (body-id w body) (double fx) (double fy) 0 0.0 0.0 1)
+           :force! {:body body})
+   nil)
+  ([w body [fx fy] [px py]]
+   (check! (f/body-apply-force (body-id w body) (double fx) (double fy)
+                               1 (double px) (double py) 1)
+           :force! {:body body})
+   nil))
+
+(defn set-velocity!
+  "Sets a body's linear velocity [vx vy] in m/s."
+  [w body [vx vy]]
+  (check! (f/body-set-velocity (body-id w body) (double vx) (double vy))
+          :set-velocity! {:body body})
+  nil)
+
+(defn set-angular-velocity!
+  "Sets a body's angular velocity in radians per second."
+  [w body av]
+  (check! (f/body-set-angular-velocity (body-id w body) (double av))
+          :set-angular-velocity! {:body body})
+  nil)
+
+(defn set-transform!
+  "Teleports a body to [x y], keeping its angle unless one is given. Box2D
+  calls this fairly expensive: fine for resets, not for every frame."
+  ([w body pos] (set-transform! w body pos (:angle (transform w body))))
+  ([w body [x y] angle]
+   (check! (f/body-set-transform (body-id w body) (double x) (double y) (double angle))
+           :set-transform! {:body body})
+   nil))
+
+(defn set-awake!
+  "Wakes a body (true) or puts it to sleep (false), along with everything
+  touching it."
+  [w body awake?]
+  (check! (f/body-set-awake (body-id w body) (int (c/flag awake?))) :set-awake! {:body body})
+  nil)
+
+(defn set-gravity-scale!
+  "How strongly gravity pulls this body: 1 normal, 0 floats, -1 falls up."
+  [w body scale]
+  (check! (f/body-set-gravity-scale (body-id w body) (double scale))
+          :set-gravity-scale! {:body body})
+  nil)
+
+(defn set-damping!
+  "Sets a body's {:linear :angular} damping (either may be left out)."
+  [w body {:keys [linear angular] :or {linear 0.0 angular 0.0}}]
+  (check! (f/body-set-damping (body-id w body) (double linear) (double angular))
+          :set-damping! {:body body})
+  nil)
+
+;; --- contacts ----------------------------------------------------------------
+
+(def ^:private TOUCHING-SEPARATION
+  "Box2D keeps speculative contacts a little before shapes touch. Closer than
+  this (meters) counts as touching; it's a bit over Box2D's linear slop."
+  0.01)
+
+(defn contacts
+  "The contacts Box2D is tracking on a body, as a vector of
+  {:other id :other-name name :normal [nx ny] :point [x y] :points n
+   :separation s :touching? bool}.
+  :normal points from the other body into this one, so a body resting on a
+  floor in a y-down world has a normal of about [0 -1]. Contacts can be
+  speculative (shapes about to touch); :touching? says they actually are."
+  [w body]
+  (let [id  (body-id w body)
+        {:keys [ids data]} (:scratch w)
+        n   (f/body-contacts id ids data f/MAX-CONTACTS)
+        reg @(:registry w)]
+    (when (neg? n) (check! n :contacts {:body body}))
+    (mapv (fn [i]
+            (let [[nx ny pts px py sep] (c/read-doubles-at data (* i f/CONTACT-DOUBLES)
+                                                           f/CONTACT-DOUBLES)
+                  other (ffi/read ids :uint64 (* 8 i))]
+              {:other      other
+               :other-name (:name (c/entry reg :body other))
+               :normal     [nx ny]
+               :point      [px py]
+               :points     (long pts)
+               :separation sep
+               :touching?  (and (pos? pts) (<= sep TOUCHING-SEPARATION))}))
+          (range n))))
+
+(defn gravity
+  "The world's gravity [gx gy]."
+  [w]
+  (live! w)
+  (:gravity w))
+
+(defn grounded?
+  "True when a body is standing on something: a touching contact whose normal
+  points against gravity by at least :min-normal (default 0.7, about 45°),
+  and that the body isn't moving away from faster than :max-separating-speed
+  (m/s, default 0.1).
+
+  The speed check matters right after a jump. Box2D's contact data is from
+  the start of the last step, so a body that just pushed off still shows its
+  floor contact for one step, while already moving away from it.
+
+  Works for y-down and y-up worlds alike."
+  ([w body] (grounded? w body {}))
+  ([w body {:keys [min-normal max-separating-speed]
+            :or   {min-normal 0.7 max-separating-speed 0.1}}]
+   (let [[gx gy] (:gravity w)
+         g       (Math/sqrt (+ (* gx gx) (* gy gy)))
+         {:keys [vx vy]} (velocity w body)]
+     (and (pos? g)
+          (boolean
+           (some (fn [{[nx ny] :normal :keys [touching? other]}]
+                   (and touching?
+                        (>= (/ (- (+ (* nx gx) (* ny gy))) g) min-normal)
+                        ;; how fast we're leaving the other body along the normal
+                        (let [{ovx :vx ovy :vy} (velocity w other)]
+                          (<= (+ (* (- vx ovx) nx) (* (- vy ovy) ny))
+                              max-separating-speed))))
+                 (contacts w body)))))))
+
 ;; --- inspection --------------------------------------------------------------
 
 (defn bodies
@@ -230,7 +374,7 @@
   [w name-or-id]
   (let [id  (body-id w name-or-id)
         e   (c/entry @(:registry w) :body id)
-        buf (:scratch w)]
+        buf (:state (:scratch w))]
     (check! (f/body-mass-info id buf) :body-info {:body name-or-id})
     (let [[mass inertia awake type-n] (c/read-doubles buf 4)
           st (state w id)]
@@ -244,7 +388,8 @@
        :velocity  (select-keys st [:vx :vy :w])
        :mass      mass
        :inertia   inertia
-       :awake?    (== 1.0 awake)})))
+       :awake?    (== 1.0 awake)
+       :contacts  (contacts w id)})))
 
 (defn snapshot
   "The whole world as one plain map."

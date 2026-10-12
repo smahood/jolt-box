@@ -422,7 +422,33 @@ In every step, new logic starts in Clojure on top of small C calls, and moves
 into C only once it has settled or proves too slow (§4.1). Where a step names
 a C version, that's the eventual home, not the first draft.
 
-### Step 1: the smallest usable step, "physics hop"
+### Step 1: the smallest usable step, "physics hop" ✅ done
+
+*What changed while building it:*
+- The shim got the whole body-motion batch at once (§4.1): `impulse!` and
+  `force!` (center or at a point), `set-velocity!`, `set-angular-velocity!`,
+  `set-transform!`, `set-awake!`, `set-gravity-scale!`, `set-damping!`, plus
+  `contacts` and `gravity`.
+- `grounded?` takes an options map, `{:min-normal 0.7 :max-separating-speed 0.1}`.
+  The speed check was needed: Box2D's contact data is from the start of the
+  last step, so right after a hop the floor contact is still there for one
+  step. Without the check the game's "stop sliding on landing" killed every
+  hop's sideways speed.
+- The shim builds and reads rotations with exact `cosf`/`sinf`/`atan2`.
+  Box2D's own `b2MakeRot` and `b2Rot_GetAngle` are fast approximations, off by
+  up to ~1e-3 rad, so an angle set at the REPL didn't read back as itself.
+- Static bodies report contacts too (the normal pointing into them).
+- `body-info` includes `:contacts`.
+- In the game, switching back from Box2D to the old movement pushes the
+  toilet out of anything it overlaps first. Box2D lets bodies sink in by a
+  fraction of a pixel, and the old collision code read that as a crash and
+  pushed the toilet through the wall.
+- The game's glue is `game.physics`. It keeps the Box2D world per flecs
+  world (like ents keeps its per-world tables), so systems and
+  `game.sim/send!` find it from the flecs world alone:
+  `(game.sim/send! #(b2/body-info (game.physics/b2 %) :toilet))`. F6 toggles
+  the movement (a key rather than a raygui control for now), and the editor
+  shows which one is on.
 
 **The smallest change that makes the library useful in the game:** the toilet
 hops with Box2D gravity and an impulse on a Box2D floor, behind a dev-panel

@@ -23,3 +23,20 @@
 ;; --- shapes -------------------------------------------------------------------
 (ffi/defcfn body-add-box   "jb2_body_add_box"
   [:uint64 :double :double :double :double :double :double :double :double] :uint64)
+
+;; --- body motion --------------------------------------------------------------
+(ffi/defcfn body-apply-impulse "jb2_body_apply_impulse"
+  [:uint64 :double :double :int :double :double :int] :int)
+(ffi/defcfn body-apply-force "jb2_body_apply_force"
+  [:uint64 :double :double :int :double :double :int] :int)
+(ffi/defcfn body-set-velocity  "jb2_body_set_velocity"  [:uint64 :double :double] :int)
+(ffi/defcfn body-set-angular-velocity "jb2_body_set_angular_velocity" [:uint64 :double] :int)
+(ffi/defcfn body-set-transform "jb2_body_set_transform" [:uint64 :double :double :double] :int)
+(ffi/defcfn body-set-awake     "jb2_body_set_awake"     [:uint64 :int] :int)
+(ffi/defcfn body-set-gravity-scale "jb2_body_set_gravity_scale" [:uint64 :double] :int)
+(ffi/defcfn body-set-damping   "jb2_body_set_damping"   [:uint64 :double :double] :int)
+
+;; --- contacts -----------------------------------------------------------------
+(def MAX-CONTACTS 64)       ; JB2_MAX_CONTACTS
+(def CONTACT-DOUBLES 6)     ; JB2_CONTACT_DOUBLES
+(ffi/defcfn body-contacts "jb2_body_contacts" [:uint64 :pointer :pointer :int] :int)

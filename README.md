@@ -45,7 +45,7 @@ jolt test     # headless tests
 ;=> [{:x ~0.0 :y ~1.4 :angle ~0.0} 1.0]   resting on the floor after a second
 ```
 
-## API (box2d, step 0)
+## API (box2d, steps 0–1)
 
 Meters, kilograms, seconds, radians. Anywhere a body id goes, a keyword
 name works too. Re-evaluating a named `body!` replaces the old body.
@@ -59,6 +59,14 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r}]}` → id |
 | `(destroy-body! w body)` | |
 | `(transform w body)`, `(velocity w body)` | `{:x :y :angle}`, `{:vx :vy :w}` |
+| `(impulse! w body [ix iy])`, `(impulse! w body [ix iy] [px py])` | a change in momentum, at the center or a world point |
+| `(force! w body [fx fy])`, `(force! w body [fx fy] [px py])` | a push for the next step |
+| `(set-velocity! w body [vx vy])`, `(set-angular-velocity! w body av)` | |
+| `(set-transform! w body [x y])`, `(set-transform! w body [x y] angle)` | a teleport |
+| `(set-awake! w body b)`, `(set-gravity-scale! w body s)`, `(set-damping! w body {:linear :angular})` | |
+| `(contacts w body)` | `[{:other :other-name :normal [nx ny] :point [x y] :points :separation :touching?}]`, normal pointing into this body |
+| `(grounded? w body)`, `(grounded? w body {:min-normal :max-separating-speed})` | standing on something, against gravity |
+| `(gravity w)` | `[gx gy]` |
 | `(bodies w)`, `(body-info w body)`, `(snapshot w)` | inspection, as plain data |
 | `(simulate w seconds {:sample [bodies] :every dt})` | step and sample, for the REPL and tests |
 | `(series s body field)`, `(extent ...)`, `(period ...)`, `(settled-at s body)` | measuring samples |

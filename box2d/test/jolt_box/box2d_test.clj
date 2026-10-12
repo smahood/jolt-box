@@ -137,3 +137,115 @@
     (is (< (Math/abs (- (:max (b2/extent samples :b :y)) 1.0)) 0.01))
     (is (= 1.0 (b2/settled-at samples :b)))
     (is (nil? (b2/period (subvec samples 0 10) :b :y)))))
+
+;; --- step 1: moving bodies and contacts ---------------------------------------
+
+(defn- near? [a b tol] (< (Math/abs (- (double a) (double b))) tol))
+
+(defn- settle! [w] (b2/simulate w 2.0))
+
+(deftest contacts-on-a-resting-body
+  (b2/with-world [w]
+    (floor! w)
+    (crate! w)
+    (settle! w)
+    (let [cs (b2/contacts w :crate)
+          {:keys [other-name normal touching? points]} (first cs)]
+      (is (= 1 (count cs)))
+      (is (= :floor other-name))
+      (is touching?)
+      (is (= 2 points) "a box flat on a floor touches at two points")
+      (is (near? (first normal) 0.0 1e-3))
+      (is (near? (second normal) -1.0 1e-3) "points from the floor up into the crate (y-down)"))
+    (is (near? (second (:normal (first (b2/contacts w :floor)))) 1.0 1e-3)
+        "seen from the floor, the normal points down into the floor")
+    (is (= 1 (count (:contacts (b2/body-info w :crate)))))))
+
+(deftest impulse-hop-and-grounded
+  (b2/with-world [w]
+    (floor! w)
+    (crate! w)
+    (settle! w)
+    (is (b2/grounded? w :crate))
+    (let [m (:mass (b2/body-info w :crate))]
+      (b2/impulse! w :crate [0 (* m -4.0)])     ; 4 m/s upward
+      (is (near? (:vy (b2/velocity w :crate)) -4.0 1e-4) "an impulse is a change in momentum")
+      (let [samples (b2/simulate w 2.0 {:sample [:crate] :every b2/STEP})
+            top     (:min (b2/extent samples :crate :y))]
+        ;; v²/2g = 16/19.6 ≈ 0.82 m above the 1.4 m rest height
+        (is (near? (- 1.4 top) 0.816 0.03) (str "rises about 0.82 m, rose " (- 1.4 top)))
+        (is (b2/grounded? w :crate) "lands again")))
+    (testing "not grounded the step after pushing off"
+      ;; the contact data still shows the floor for one step
+      (b2/impulse! w :crate [0 -4.0])
+      (b2/step! w b2/STEP)
+      (is (some :touching? (b2/contacts w :crate)) "the floor contact lingers")
+      (is (not (b2/grounded? w :crate)) "but it's moving away, so it isn't ground")
+      (b2/simulate w 2.0))
+    (testing "not grounded in mid-air"
+      (b2/impulse! w :crate [0 -4.0])
+      (b2/simulate w 0.2)
+      (is (not (b2/grounded? w :crate))))))
+
+(deftest grounded-follows-gravity
+  (testing "y-up world"
+    (b2/with-world [w {:gravity [0 -9.8]}]
+      (b2/body! w :floor {:pos [0 -2] :shapes [{:box [10 0.1]}]})
+      (crate! w)
+      (settle! w)
+      (is (near? (:y (b2/transform w :crate)) -1.4 0.01))
+      (is (b2/grounded? w :crate))))
+  (testing "a wall beside a falling body isn't ground"
+    (b2/with-world [w]
+      (b2/body! w :wall {:pos [0.6 0] :shapes [{:box [0.1 5]}]})
+      (crate! w)
+      (b2/set-velocity! w :crate [1 0])          ; pressed against the wall
+      (b2/simulate w 0.1)
+      (is (some :touching? (b2/contacts w :crate)))
+      (is (not (b2/grounded? w :crate))))))
+
+(deftest setters
+  (b2/with-world [w]
+    (let [b (b2/body! w {:type :dynamic :shapes [{:box [0.5 0.5]}]})]
+      (testing "set-velocity! and set-angular-velocity!"
+        (b2/set-velocity! w b [1 2])
+        (b2/set-angular-velocity! w b 3)
+        (is (= {:vx 1.0 :vy 2.0 :w 3.0} (b2/velocity w b))))
+      (testing "set-transform! teleports"
+        (b2/set-transform! w b [5 6] 0.5)
+        (let [{:keys [x y angle]} (b2/transform w b)]
+          (is (near? x 5 1e-6)) (is (near? y 6 1e-6)) (is (near? angle 0.5 1e-6)))
+        (b2/set-transform! w b [7 8])
+        (is (near? (:angle (b2/transform w b)) 0.5 1e-6) "keeps the angle"))
+      (testing "gravity scale 0 floats"
+        (b2/set-velocity! w b [0 0])
+        (b2/set-angular-velocity! w b 0)
+        (b2/set-gravity-scale! w b 0)
+        (b2/simulate w 1.0)
+        (is (near? (:y (b2/transform w b)) 8 1e-6)))
+      (testing "a steady force accelerates (F = ma)"
+        (let [m (:mass (b2/body-info w b))]
+          (dotimes [_ 60] (b2/force! w b [(* 2 m) 0]) (b2/step! w b2/STEP))
+          (is (near? (:vx (b2/velocity w b)) 2.0 0.01))))
+      (testing "damping slows it"
+        (b2/set-damping! w b {:linear 5.0})
+        (b2/simulate w 1.0)
+        (is (< (:vx (b2/velocity w b)) 0.1)))
+      (testing "an off-center impulse spins it"
+        (let [{:keys [x y]} (b2/transform w b)]
+          (b2/set-angular-velocity! w b 0)
+          (b2/impulse! w b [0 1] [(+ x 0.5) y])
+          (is (pos? (:w (b2/velocity w b))))))
+      (testing "set-awake!"
+        (b2/set-awake! w b false)
+        (is (false? (:awake? (b2/body-info w b))))
+        (b2/set-awake! w b true)
+        (is (:awake? (b2/body-info w b)))))))
+
+(deftest motion-on-stale-ids-throws
+  (b2/with-world [w]
+    (let [b (crate! w)]
+      (b2/destroy-body! w b)
+      (doseq [f [#(b2/impulse! w b [0 1]) #(b2/force! w b [0 1]) #(b2/set-velocity! w b [0 0])
+                 #(b2/set-transform! w b [0 0] 0) #(b2/contacts w b) #(b2/grounded? w b)]]
+        (is (thrown-ex-info? f))))))
