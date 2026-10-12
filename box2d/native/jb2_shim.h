@@ -92,6 +92,8 @@ int jb2_body_set_transform(uint64_t body, double x, double y, double angle); /* 
 int jb2_body_set_awake(uint64_t body, int awake);
 int jb2_body_set_gravity_scale(uint64_t body, double scale);
 int jb2_body_set_damping(uint64_t body, double linear, double angular);
+/* enable 0/1; threshold (m/s) < 0 keeps the current one */
+int jb2_body_set_sleep(uint64_t body, int enable, double threshold);
 
 /* Touching contacts of a body, up to cap (at most JB2_MAX_CONTACTS). For each
  * contact i, ids_out[i] is the other body and data_out[i*6 ..] holds:
@@ -171,6 +173,10 @@ uint64_t jb2_prismatic_create(uint32_t world, uint64_t body_a, uint64_t body_b,
 #define JB2_SET_MOTOR_SPEED 7
 #define JB2_SET_MAX_MOTOR 8     /* max motor force (prismatic, distance) or torque (revolute) */
 #define JB2_SET_LENGTH 9        /* rest length (distance) */
+#define JB2_SET_LINEAR_HERTZ 10    /* weld */
+#define JB2_SET_ANGULAR_HERTZ 11   /* weld */
+#define JB2_SET_LINEAR_DAMPING 12  /* weld */
+#define JB2_SET_ANGULAR_DAMPING 13 /* weld */
 int jb2_prismatic_set(uint64_t joint, int what, double v1, double v2);
 
 /* Writes JB2_PRISMATIC_READ doubles:
@@ -222,5 +228,20 @@ int jb2_distance_set(uint64_t joint, int what, double v1, double v2);
  *   9 motor on  10 motor speed  11 max motor force */
 #define JB2_DISTANCE_READ 12
 int jb2_distance_read(uint64_t joint, double *out);
+
+/* weld: holds b fixed to a, rigidly (hertz 0) or springily.
+ * params (JB2_WELD_PARAMS doubles):
+ *   0 1 local anchor a   2 3 local anchor b   4 reference angle
+ *   5 linear hertz  6 angular hertz  7 linear damping  8 angular damping
+ *   9 collide connected */
+#define JB2_WELD_PARAMS 10
+uint64_t jb2_weld_create(uint32_t world, uint64_t body_a, uint64_t body_b,
+                         const double *params, uint64_t user_data);
+/* what: JB2_SET_LINEAR_HERTZ .. JB2_SET_ANGULAR_DAMPING */
+int jb2_weld_set(uint64_t joint, int what, double v1, double v2);
+/* Writes JB2_WELD_READ doubles: linear hertz, angular hertz, linear damping,
+ * angular damping. */
+#define JB2_WELD_READ 4
+int jb2_weld_read(uint64_t joint, double *out);
 
 #endif

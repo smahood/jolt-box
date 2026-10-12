@@ -55,6 +55,7 @@
 (ffi/defcfn body-set-awake     "jb2_body_set_awake"     [:uint64 :int] :int)
 (ffi/defcfn body-set-gravity-scale "jb2_body_set_gravity_scale" [:uint64 :double] :int)
 (ffi/defcfn body-set-damping   "jb2_body_set_damping"   [:uint64 :double :double] :int)
+(ffi/defcfn body-set-sleep     "jb2_body_set_sleep"     [:uint64 :int :double] :int)
 
 ;; --- contacts -----------------------------------------------------------------
 (def MAX-CONTACTS 64)       ; JB2_MAX_CONTACTS
@@ -91,6 +92,10 @@
 (def SET-MOTOR-SPEED 7)
 (def SET-MAX-MOTOR 8)
 (def SET-LENGTH 9)
+(def SET-LINEAR-HERTZ 10)
+(def SET-ANGULAR-HERTZ 11)
+(def SET-LINEAR-DAMPING 12)
+(def SET-ANGULAR-DAMPING 13)
 
 (def PRISMATIC-PARAMS 18)   ; JB2_PRISMATIC_PARAMS
 (def PRISMATIC-READ 15)     ; JB2_PRISMATIC_READ
@@ -109,3 +114,9 @@
 (ffi/defcfn distance-create "jb2_distance_create" [:uint32 :uint64 :uint64 :pointer :uint64] :uint64)
 (ffi/defcfn distance-set    "jb2_distance_set"    [:uint64 :int :double :double] :int)
 (ffi/defcfn distance-read   "jb2_distance_read"   [:uint64 :pointer] :int)
+
+(def WELD-PARAMS 10)        ; JB2_WELD_PARAMS
+(def WELD-READ 4)           ; JB2_WELD_READ
+(ffi/defcfn weld-create "jb2_weld_create" [:uint32 :uint64 :uint64 :pointer :uint64] :uint64)
+(ffi/defcfn weld-set    "jb2_weld_set"    [:uint64 :int :double :double] :int)
+(ffi/defcfn weld-read   "jb2_weld_read"   [:uint64 :pointer] :int)

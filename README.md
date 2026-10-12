@@ -45,7 +45,7 @@ jolt test     # headless tests
 ;=> [{:x ~0.0 :y ~1.4 :angle ~0.0} 1.0]   resting on the floor after a second
 ```
 
-## API (box2d, steps 0–6)
+## API (box2d, steps 0–7)
 
 Meters, kilograms, seconds, radians. Anywhere a body id goes, a keyword
 name works too. Re-evaluating a named `body!` replaces the old body.
@@ -56,7 +56,7 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(destroy! w)`, `(with-world [w opts] ...)` | release it; `with-world` does so in `finally` |
 | `(step! w dt)`, `(step! w dt substeps)` | a raw step (4 substeps by default) |
 | `(step-fixed! w frame-dt)` | fixed 1/60 s steps, at most `:max-steps` per call; returns alpha |
-| `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r :contact-events? b :hit-events? b :sensor? b :sensor-events? b}]}` → id. Shapes are `{:box [hw hh]}`, `{:circle r}` or `{:capsule [[x1 y1] [x2 y2]] :radius r}`, and take `:group :category :mask` for collision filtering (same negative group never collides). A sensor only sees shapes with `:sensor-events? true`. Re-evaluating a named body remakes its joints |
+| `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :enable-sleep? b :sleep-threshold :linear-damping :angular-damping :gravity-scale :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r :contact-events? b :hit-events? b :sensor? b :sensor-events? b}]}` → id. Shapes are `{:box [hw hh]}`, `{:circle r}` or `{:capsule [[x1 y1] [x2 y2]] :radius r}`, and take `:group :category :mask` for collision filtering (same negative group never collides). A sensor only sees shapes with `:sensor-events? true`. Re-evaluating a named body remakes its joints |
 | `(destroy-body! w body)` | |
 | `(transform w body)`, `(velocity w body)` | `{:x :y :angle}`, `{:vx :vy :w}` |
 | `(read-bodies w bodies)` | `[x y angle vx vy w ...]` for many bodies at once |
@@ -78,9 +78,13 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(joint! w name? {:type :prismatic :a body :b body :anchor [x y] :axis [x y] :spring {:hertz :damping} :target t :limit [lo hi] :motor {:max-force :speed} :collide-connected? b :user-data n})` | → joint id. Anchors and axis in world space, where the bodies are now |
 | `(joint! w name? {:type :revolute :a :b :anchor [x y] :spring {..} :target rad :limit [lo hi] :motor {:max-torque :speed}})` | a hinge |
 | `(joint! w name? {:type :distance :a :b :anchor-a [x y] :anchor-b [x y] :length m :spring {..} :limit [min max] :motor {:max-force :speed}})` | rigid unless it has a `:spring`; anchors default to the bodies' origins, length to how far apart they are |
-| `(set-joint! w joint {:spring {..}\|false :target t :length m :limit [lo hi]\|false :motor {..}\|false :collide-connected? b})` | change it live (remembered if the joint is remade) |
+| `(joint! w name? {:type :weld :a :b :anchor [x y] :linear-hertz :angular-hertz :linear-damping :angular-damping})` | holds b fixed to a; 0 hertz is rigid |
+| `(set-joint! w joint {:spring {..}\|false :target t :length m :limit [lo hi]\|false :motor {..}\|false :linear-hertz .. :collide-connected? b})` | change it live (remembered if the joint is remade) |
+| `(joint-forces w joints)` | `[{:id :force :fx :fy :torque}]` as of the last step |
+| `(break-joints! w joints {:max-force :max-torque})`, `(break-joints! w joints pred)` | snaps the overloaded ones, returns their ids |
 | `(joint-state w joint)` | prismatic `{:translation :speed :motor-force}`, revolute `{:angle :speed :motor-torque}`, distance `{:length :motor-force}`, plus `{:force [fx fy] :torque :linear-separation :angular-separation}` |
 | `(joints w)`, `(joint-info w joint)`, `(destroy-joint! w joint)` | |
+| `(awake? w body)` | cheap; a sleeping body's joints report no force |
 | `(bodies w)`, `(body-info w body)`, `(snapshot w)` | inspection, as plain data |
 | `(debug-shapes w)` | shapes (`:kind :polygon :points`, `:circle :at :radius`, `:capsule :points :radius`, with `:center :body :name :shape :type :awake? :sensor?`) and joints (`:kind :segment :points [a b] :joint :name`), for drawing outlines |
 | `(simulate w seconds {:sample [bodies] :every dt})` | step and sample, for the REPL and tests |

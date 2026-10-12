@@ -735,3 +735,88 @@
       (b2/simulate w 0.2)
       (dorun (map #(b2/joint-info w (:id %)) (b2/joints w)))))
   (is true "got here without the process dying"))
+
+;; --- step 7: welds, joint forces, breaking ------------------------------------
+
+(defn- column!
+  "n 0.2 m blocks stacked on the floor (top at 1.9), each welded to the one
+  below and the bottom one to the floor. Returns the weld names."
+  [w n weld-spec]
+  (floor! w)
+  (vec (for [i (range n)]
+         (let [k  (keyword (str "block-" i))
+               y  (- 1.8 (* 0.2 i))
+               below (if (zero? i) :floor (keyword (str "block-" (dec i))))]
+           (b2/body! w k {:type :dynamic :pos [0 y] :shapes [{:box [0.1 0.1]}]})
+           (b2/joint! w (keyword (str "weld-" i))
+                      (merge {:type :weld :a below :b k :anchor [0 (+ y 0.1)]} weld-spec))))))
+
+(deftest welds-hold-and-give
+  (testing "rigid welds hold a column up, even knocked"
+    (b2/with-world [w]
+      (column! w 6 {})
+      (b2/set-velocity! w :block-5 [3 0])
+      (b2/simulate w 2.0)
+      (is (near? (:x (b2/transform w :block-5)) 0.0 0.05) "springs back to where it was")
+      (is (near? (:angle (b2/transform w :block-5)) 0.0 0.05))))
+  (testing "a soft angular weld bends and comes back"
+    (b2/with-world [w {:gravity [0 0]}]
+      ;; A weld's spring (and its damping) is sized by the two light blocks
+      ;; it joins, so the column as a whole swings slowly from side to side,
+      ;; underdamped even at :angular-damping 1.
+      (column! w 6 {:angular-hertz 3 :angular-damping 1.0})
+      (b2/set-velocity! w :block-5 [3 0])
+      (let [samples (b2/simulate w 6.0 {:sample [:block-5]})]
+        (is (> (:max (b2/extent samples :block-5 :x)) 0.15) "bends a long way")
+        (is (< (:min (b2/extent samples :block-5 :x)) -0.1) "and swings back past upright")
+        (is (= 6 (count (b2/joints w))) "without breaking"))))
+  (testing "settings read back and change live"
+    (b2/with-world [w]
+      (column! w 2 {:linear-hertz 10 :angular-hertz 5 :angular-damping 0.5})
+      (is (= {:linear-hertz 10.0 :angular-hertz 5.0 :linear-damping 0.0 :angular-damping 0.5}
+             (:settings (b2/joint-info w :weld-1))))
+      (b2/set-joint! w :weld-1 {:angular-hertz 2})
+      (is (= 2.0 (get-in (b2/joint-info w :weld-1) [:settings :angular-hertz]))))))
+
+(deftest joint-forces-and-breaking
+  (b2/with-world [w]
+    (let [welds (column! w 6 {})
+          ids   (mapv #(:id (b2/joint-info w %)) welds)]
+      (b2/simulate w 0.5)
+      (let [rest (b2/joint-forces w welds)]
+        (is (= ids (mapv :id rest)))
+        (is (> (:force (first rest)) (:force (last rest))) "the bottom weld holds up the most")
+        (is (near? (:force (first rest)) (* 6 0.04 9.8) 0.3) "about the weight above it")
+        (is (= [] (b2/break-joints! w welds {:max-force 10 :max-torque 10})) "nothing over at rest"))
+      (testing "a hard knock breaks the most loaded welds, not the others"
+        (b2/impulse! w :block-5 [0.6 0])
+        (b2/step! w b2/STEP)
+        ;; the knock loads the whole column, most in the middle (~3.4 N·m),
+        ;; least at the ends (bottom ~0.8, top ~1.1)
+        (let [broken (set (b2/break-joints! w welds {:max-torque 2.0}))]
+          (is (seq broken) "something broke")
+          (is (not (broken (first ids))) "the bottom weld survived")
+          (is (not (broken (peek ids))) "and the top one")
+          (is (= (count welds) (+ (count broken) (count (b2/joints w)))))))
+      (testing "a predicate rule"
+        (let [left (mapv :id (b2/joints w))]
+          (is (= left (b2/break-joints! w left (fn [{:keys [fx fy force]}] (and (number? fx) (number? fy) (>= force 0))))))
+          (is (= [] (b2/joints w)))))
+      (testing "broken ids are skipped next time"
+        (is (vector? (b2/break-joints! w (mapv :id (b2/joints w)) {:max-force 1e9})))
+        (is (= [] (b2/break-joints! w [123456789] {:max-force 0})) "an unknown id is skipped")))))
+
+(deftest body-sleep-and-damping-settings
+  (b2/with-world [w {:gravity [0 0]}]
+    (b2/body! w :insomniac {:type :dynamic :enable-sleep? false :shapes [{:box [0.1 0.1]}]})
+    (b2/body! w :sleepy {:type :dynamic :pos [2 0] :sleep-threshold 1.0 :shapes [{:box [0.1 0.1]}]})
+    (b2/body! w :draggy {:type :dynamic :pos [4 0] :linear-damping 5.0 :shapes [{:box [0.1 0.1]}]})
+    (b2/body! w :floaty {:type :dynamic :pos [6 0] :gravity-scale 0 :shapes [{:box [0.1 0.1]}]})
+    (b2/set-velocity! w :sleepy [0.5 0])
+    (b2/set-velocity! w :draggy [2 0])
+    (b2/simulate w 2.0)
+    (is (:awake? (b2/body-info w :insomniac)) "never sleeps")
+    (is (b2/awake? w :insomniac))
+    (is (false? (b2/awake? w :sleepy)))
+    (is (not (:awake? (b2/body-info w :sleepy))) "under its threshold, so it slept while moving")
+    (is (< (:vx (b2/velocity w :draggy)) 0.01) "damped to a stop")))

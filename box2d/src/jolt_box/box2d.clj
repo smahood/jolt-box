@@ -196,7 +196,7 @@
         (f/shape-set-filter sid (long (or category 1)) (long (or mask -1)) (int (or group 0))))
       sid)))
 
-(declare destroy-body! attached-joints remake-joint!)
+(declare destroy-body! attached-joints remake-joint! awake-and-type)
 
 (defn body!
   "Creates a body and returns its id. With a keyword name, an existing body
@@ -210,6 +210,10 @@
     :angle a         radians, default 0
     :fixed-rotation? true stops it rotating
     :awake?          false makes it start asleep (default true)
+    :enable-sleep?   false keeps it awake always (default true)
+    :sleep-threshold m/s it must stay under to fall asleep (Box2D: 0.05)
+    :linear-damping :angular-damping   slow it down over time (default 0)
+    :gravity-scale   1 normal, 0 floats
     :user-data u64   an integer to hand back later, e.g. a flecs entity id
     :shapes          [{:box [half-w half-h] :offset [x y] :angle a
                        ;; or {:circle radius :offset [x y]}
@@ -255,6 +259,14 @@
                         (do (f/body-destroy id)
                             (throw (ex-info "Box2D rejected a shape" {:name body-name :shape s}))))
                       acc))]
+         (let [{:keys [linear-damping angular-damping enable-sleep? sleep-threshold gravity-scale]} spec]
+           (when (or linear-damping angular-damping)
+             (f/body-set-damping id (double (or linear-damping 0)) (double (or angular-damping 0))))
+           (when (or (some? enable-sleep?) sleep-threshold)
+             (f/body-set-sleep id (int (c/flag (if (some? enable-sleep?) enable-sleep? true)))
+                               (double (or sleep-threshold -1))))
+           (when gravity-scale
+             (f/body-set-gravity-scale id (double gravity-scale))))
          (swap! (:registry w) c/add-entry :body id
                 (cond-> {:spec spec :shapes sids} body-name (assoc :name body-name)))
          (doseq [[_ j] attached]
@@ -791,6 +803,13 @@
           (spring-params spring) (limit-params limit) (motor-params motor :max-force)
           [(c/flag collide-connected?)]))
 
+(defn- weld-params
+  [{:keys [linear-hertz angular-hertz linear-damping angular-damping collide-connected?]}
+   {[lax lay] :local-anchor-a [lbx lby] :local-anchor-b :keys [reference-angle]}]
+  [lax lay lbx lby reference-angle
+   (or linear-hertz 0) (or angular-hertz 0) (or linear-damping 0) (or angular-damping 0)
+   (c/flag collide-connected?)])
+
 (defn- read-buf [w id f n op j]
   (let [buf (state-buf w n)]
     (check! (f id buf) op {:joint j})
@@ -828,6 +847,11 @@
                 :limit  (when (== 1.0 lon) [lo hi])
                 :motor  (when (== 1.0 mon) {:max-force mmf :speed ms})}}))
 
+(defn- read-weld [w id j]
+  (let [[lh ah ld ad] (read-buf w id f/weld-read f/WELD-READ :joint j)]
+    {:state    {}
+     :settings {:linear-hertz lh :angular-hertz ah :linear-damping ld :angular-damping ad}}))
+
 (def ^:private joint-kinds
   "Per joint type: how to make it, change it and read it, and the key its
   motor's limit goes by."
@@ -836,7 +860,9 @@
    :revolute  {:create f/revolute-create :set f/revolute-set :read read-revolute
                :params revolute-params :max-motor :max-torque}
    :distance  {:create f/distance-create :set f/distance-set :read read-distance
-               :params distance-params :max-motor :max-force}})
+               :params distance-params :max-motor :max-force}
+   :weld      {:create f/weld-create :set f/weld-set :read read-weld
+               :params weld-params :max-motor nil}})
 
 (defn- joint-kind [type spec]
   (or (joint-kinds type)
@@ -879,7 +905,13 @@
   :distance   keeps :anchor-a on a and :anchor-b on b (default: their
               origins) :length apart (default: as far apart as they are).
               Rigid unless it has a :spring; :limit [min max] m bounds it
-              either way; :motor {:max-force N :speed m/s}."
+              either way; :motor {:max-force N :speed m/s}.
+  :weld       holds b fixed to a as they are now (anchor: :anchor, default
+              b's origin). Rigid by default; :linear-hertz / :angular-hertz
+              above 0 let it give (stretch / bend), with :linear-damping /
+              :angular-damping. Box2D can't hold a long chain of welds
+              perfectly rigid: expect some sag.
+  joint-forces and break-joints! measure and snap joints under load."
   ([w spec] (joint! w nil spec))
   ([w joint-name {:keys [type a b] :as spec}]
    (live! w)
@@ -908,8 +940,13 @@
 (defn- setting-calls
   "The [selector v1 v2] calls a settings map turns into, for a joint whose
   motor limit goes by max-key."
-  [{:keys [spring target length limit motor]} settings max-key]
+  [{:keys [spring target length limit motor
+           linear-hertz angular-hertz linear-damping angular-damping]} settings max-key]
   (cond-> []
+    (some? linear-hertz)    (conj [f/SET-LINEAR-HERTZ linear-hertz 0])
+    (some? angular-hertz)   (conj [f/SET-ANGULAR-HERTZ angular-hertz 0])
+    (some? linear-damping)  (conj [f/SET-LINEAR-DAMPING linear-damping 0])
+    (some? angular-damping) (conj [f/SET-ANGULAR-DAMPING angular-damping 0])
     (contains? settings :spring)
     (into (cons [f/SET-SPRING-ON (c/flag spring) 0]
                 (when (map? spring)
@@ -936,6 +973,7 @@
      :length m                    ; :distance rest length
      :limit [lower upper] or false
      :motor {:max-force or :max-torque, :speed} or false
+     :linear-hertz :angular-hertz :linear-damping :angular-damping  ; :weld
      :collide-connected? b}"
   [w name-or-id settings]
   (let [id (joint-id w name-or-id)
@@ -1004,7 +1042,48 @@
      :state    (joint-state w id)
      :anchors  (joint-anchors w j)}))
 
+;; Clojure for now: one read per joint. A wall of many welds may want this as
+;; a single shim call (guide §4.1); the results would be the same.
+(defn joint-forces
+  "How hard each joint is working to hold its bodies together, as of the last
+  step: [{:id :force N :fx :fy :torque N·m} ...] in the order given (:force
+  is the magnitude of the constraint force, :fx :fy its world components)."
+  [w names-or-ids]
+  (live! w)
+  (mapv (fn [j]
+          (let [id (joint-id w j)
+                {[fx fy] :force :keys [torque]} (read-joint-common w id j)]
+            {:id id :force (Math/sqrt (+ (* fx fx) (* fy fy))) :fx fx :fy fy :torque torque}))
+        names-or-ids))
+
+(defn break-joints!
+  "Destroys the joints among names-or-ids that are over their limit, as of
+  the last step, and returns the ids of the ones it broke. The rule is either
+  {:max-force N :max-torque N·m} (either may be left out) or a predicate
+  given each joint-forces map ({:id :force :fx :fy :torque}), e.g. to break on
+  the load above what a joint carries at rest. Joints already gone are
+  skipped."
+  [w names-or-ids rule]
+  (let [reg   @(:registry w)
+        alive (filterv #(some->> (c/resolve-id reg :joint %) (c/entry reg :joint)) names-or-ids)
+        loads (joint-forces w alive)
+        over? (if (fn? rule)
+                rule
+                (let [{:keys [max-force max-torque]} rule]
+                  (fn [{:keys [force torque]}]
+                    (or (and max-force (> force max-force))
+                        (and max-torque (> (Math/abs (double torque)) max-torque))))))
+        broken (into [] (comp (filter over?) (map :id)) loads)]
+    (run! #(destroy-joint! w %) broken)
+    broken))
+
 ;; --- inspection --------------------------------------------------------------
+
+(defn awake?
+  "Is a body awake? Cheaper than body-info. A sleeping body's joints report
+  no force, so check this before judging joint-forces."
+  [w body]
+  (first (awake-and-type w (body-id w body))))
 
 (defn bodies
   "Every body in w: a vector of {:id :name :type}, in creation order."

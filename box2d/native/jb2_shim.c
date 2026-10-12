@@ -216,6 +216,15 @@ int jb2_body_set_damping(uint64_t body, double linear, double angular)
 	return JB2_OK;
 }
 
+int jb2_body_set_sleep(uint64_t body, int enable, double threshold)
+{
+	if (!jb2_body_is_valid(body)) return JB2_BAD_ID;
+	b2BodyId id = b2LoadBodyId(body);
+	b2Body_EnableSleep(id, enable != 0);
+	if (threshold >= 0.0) b2Body_SetSleepThreshold(id, (float)threshold);
+	return JB2_OK;
+}
+
 /* --- contacts ------------------------------------------------------------- */
 
 int jb2_body_contacts(uint64_t body, uint64_t *ids_out, double *data_out, int cap)
@@ -707,5 +716,55 @@ int jb2_distance_read(uint64_t joint, double *out)
 	out[9] = b2DistanceJoint_IsMotorEnabled(id) ? 1.0 : 0.0;
 	out[10] = b2DistanceJoint_GetMotorSpeed(id);
 	out[11] = b2DistanceJoint_GetMaxMotorForce(id);
+	return JB2_OK;
+}
+
+uint64_t jb2_weld_create(uint32_t world, uint64_t body_a, uint64_t body_b,
+                         const double *p, uint64_t user_data)
+{
+	if (!jb2_world_is_valid(world) || !jb2_body_is_valid(body_a) || !jb2_body_is_valid(body_b))
+		return 0;
+	b2WeldJointDef def = b2DefaultWeldJointDef();
+	def.bodyIdA = b2LoadBodyId(body_a);
+	def.bodyIdB = b2LoadBodyId(body_b);
+	def.localAnchorA = (b2Vec2){ (float)p[0], (float)p[1] };
+	def.localAnchorB = (b2Vec2){ (float)p[2], (float)p[3] };
+	def.referenceAngle = (float)p[4];
+	def.linearHertz = (float)p[5];
+	def.angularHertz = (float)p[6];
+	def.linearDampingRatio = (float)p[7];
+	def.angularDampingRatio = (float)p[8];
+	def.collideConnected = p[9] != 0.0;
+	def.userData = (void*)(uintptr_t)user_data;
+	return b2StoreJointId(b2CreateWeldJoint(b2LoadWorldId(world), &def));
+}
+
+int jb2_weld_set(uint64_t joint, int what, double v1, double v2)
+{
+	(void)v2;
+	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
+	b2JointId id = b2LoadJointId(joint);
+	if (b2Joint_GetType(id) != b2_weldJoint) return JB2_BAD_ID;
+	switch (what)
+	{
+		case JB2_SET_LINEAR_HERTZ: b2WeldJoint_SetLinearHertz(id, (float)v1); break;
+		case JB2_SET_ANGULAR_HERTZ: b2WeldJoint_SetAngularHertz(id, (float)v1); break;
+		case JB2_SET_LINEAR_DAMPING: b2WeldJoint_SetLinearDampingRatio(id, (float)v1); break;
+		case JB2_SET_ANGULAR_DAMPING: b2WeldJoint_SetAngularDampingRatio(id, (float)v1); break;
+		default: return JB2_BAD_ID;
+	}
+	b2Joint_WakeBodies(id);
+	return JB2_OK;
+}
+
+int jb2_weld_read(uint64_t joint, double *out)
+{
+	if (!jb2_joint_is_valid(joint)) return JB2_BAD_ID;
+	b2JointId id = b2LoadJointId(joint);
+	if (b2Joint_GetType(id) != b2_weldJoint) return JB2_BAD_ID;
+	out[0] = b2WeldJoint_GetLinearHertz(id);
+	out[1] = b2WeldJoint_GetAngularHertz(id);
+	out[2] = b2WeldJoint_GetLinearDampingRatio(id);
+	out[3] = b2WeldJoint_GetAngularDampingRatio(id);
 	return JB2_OK;
 }

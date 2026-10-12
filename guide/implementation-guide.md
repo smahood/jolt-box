@@ -794,7 +794,52 @@ the floor, so the hop comes out of the physics.
 - in the game: the head wobbles after hops, the neck extends and retracts, and
   head weight changes how the toilet moves
 
-### Step 7: deformable, breakable walls
+### Step 7: deformable, breakable walls ✅ done
+
+*What changed while building it:*
+- `:weld` joints (`:linear-hertz :angular-hertz :linear-damping
+  :angular-damping`; 0 hertz is rigid), one more entry in `joint-kinds`.
+- `joint-forces` returns `{:id :force :fx :fy :torque}`, and `break-joints!`
+  takes either `{:max-force :max-torque}` or a predicate over those maps.
+  The predicate turned out to be essential (see below).
+- `awake?`, a cheap check, because **a sleeping body's joints report no
+  force**: judging a sleeping wall's welds against their resting load would
+  snap them all.
+- Body specs take `:enable-sleep? :sleep-threshold :linear-damping
+  :angular-damping :gravity-scale`.
+- Everything stayed in Clojure: the sim update is ~0.8 ms beside an awake
+  18-brick wall with outlines on, so no C batch readers or C debug draw yet.
+- **Soft welds behave like the neck's hinges:** a weld's spring and damping
+  are sized by the two light bodies it joins, so a column of soft welds
+  swings slowly and stays underdamped even at damping 1. Walls use rigid
+  welds.
+
+*What measuring found (it took three designs):*
+1. **Rigid welds, anchored to the floor:** the wall acts as one rigid
+   lever. A hit snapped the two floor welds and the whole wall slid and
+   tipped as one piece; a heavier toilet just snapped them sooner.
+2. **Bricks standing on the floor, welded to each other:** better, but a
+   weld holding up the bricks above it carries ~18 N standing still, as much
+   as a hit adds, so a plain force limit can't tell standing from being hit.
+   **Breaking on the load above each weld's resting baseline** fixed that
+   (recorded after the level settles for a second). But letting snapped welds
+   decide when the wall comes down was erratic: the snapping cascades (one
+   hop brought it all down, or a stronger weld took five to eight), and a
+   heavy head, hopping lower, hit the stiff bottom rows and did worse.
+3. **What shipped: welds are the look, hitpoints decide the fall.** Welds
+   snap at 16 N over their baseline, so the wall cracks and bends where it's
+   hit. When it comes down is Step 3's momentum rule; at 0 hitpoints the
+   rest of the welds snap and the bricks are shoved away from the toilet as
+   debris, which vanishes in a puff after 3 s.
+
+*In the game:* the dirt wall kind has `:pieces {:cols 2 :rows 9 :break-force
+16.0}`: 18 bricks of 40 px with 25 welds, standing on the floor. With a
+default head the first hop cracks most of the welds and bounces back, the
+second brings it down; a 1 kg head brings it down in one; the toilet passes
+through either way. Snapped welds shake the camera a little and throw a few
+chunks. Bricks draw at their real angles (a `line-ex!` as thick as the brick,
+plus its edges), and walls without `:pieces` keep the old static box. The
+hand-written movement still sees a whole wall.
 
 Box2D has only rigid bodies, so walls deform by being built from pieces.
 
