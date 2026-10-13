@@ -270,37 +270,37 @@
    (live! w)
    (when (and body-name (not (keyword? body-name)))
      (throw (ex-info "body names are keywords" {:name body-name})))
-   (let [type-n (or (body-types type)
-                    (throw (ex-info "unknown body :type" {:type type})))]
-     (let [old      (and body-name (c/resolve-id @(:registry w) :body body-name))
-           attached (when old (attached-joints @(:registry w) old))
-           _        (when old (destroy-body! w old))
-           [x y]    pos
-           id (f/body-create (:id w) (int type-n) (double x) (double y) (double angle)
-                             (int (c/flag fixed-rotation?)) (int (c/flag awake?))
-                             (long user-data))]
-       (when (zero? id)
-         (throw (ex-info "Box2D couldn't create the body" {:name body-name :spec spec})))
-       (let [sids (loop [ss (seq shapes) acc []]
-                    (if-let [s (first ss)]
-                      (if-let [sid (add-shape! id s)]
-                        (recur (next ss) (conj acc sid))
-                        (do (f/body-destroy id)
-                            (throw (ex-info "Box2D rejected a shape" {:name body-name :shape s}))))
-                      acc))]
-         (let [{:keys [linear-damping angular-damping enable-sleep? sleep-threshold gravity-scale]} spec]
-           (when (or linear-damping angular-damping)
-             (f/body-set-damping id (double (or linear-damping 0)) (double (or angular-damping 0))))
-           (when (or (some? enable-sleep?) sleep-threshold)
-             (f/body-set-sleep id (int (c/flag (if (some? enable-sleep?) enable-sleep? true)))
-                               (double (or sleep-threshold -1))))
-           (when gravity-scale
-             (f/body-set-gravity-scale id (double gravity-scale))))
-         (swap! (:registry w) c/add-entry :body id
-                (cond-> {:spec spec :shapes sids} body-name (assoc :name body-name)))
-         (doseq [[_ j] attached]
-           (remake-joint! w j old id))
-         id)))))
+   (let [type-n   (or (body-types type)
+                     (throw (ex-info "unknown body :type" {:type type})))
+         old      (and body-name (c/resolve-id @(:registry w) :body body-name))
+         attached (when old (attached-joints @(:registry w) old))
+         _        (when old (destroy-body! w old))
+         [x y]    pos
+         id (f/body-create (:id w) (int type-n) (double x) (double y) (double angle)
+                           (int (c/flag fixed-rotation?)) (int (c/flag awake?))
+                           (long user-data))]
+     (when (zero? id)
+       (throw (ex-info "Box2D couldn't create the body" {:name body-name :spec spec})))
+     (let [sids (loop [ss (seq shapes) acc []]
+                  (if-let [s (first ss)]
+                    (if-let [sid (add-shape! id s)]
+                      (recur (next ss) (conj acc sid))
+                      (do (f/body-destroy id)
+                          (throw (ex-info "Box2D rejected a shape" {:name body-name :shape s}))))
+                    acc))]
+       (let [{:keys [linear-damping angular-damping enable-sleep? sleep-threshold gravity-scale]} spec]
+         (when (or linear-damping angular-damping)
+           (f/body-set-damping id (double (or linear-damping 0)) (double (or angular-damping 0))))
+         (when (or (some? enable-sleep?) sleep-threshold)
+           (f/body-set-sleep id (int (c/flag (if (some? enable-sleep?) enable-sleep? true)))
+                             (double (or sleep-threshold -1))))
+         (when gravity-scale
+           (f/body-set-gravity-scale id (double gravity-scale))))
+       (swap! (:registry w) c/add-entry :body id
+              (cond-> {:spec spec :shapes sids} body-name (assoc :name body-name)))
+       (doseq [[_ j] attached]
+         (remake-joint! w j old id))
+       id))))
 
 (defn destroy-body!
   "Destroys a body (by name or id), with its shapes and joints."
@@ -719,7 +719,7 @@
     (mapv (fn [i]
             (let [body (ffi/read buf :uint64 (* 8 (inc (* 2 i))))
                   e    (c/entry reg :body body)]
-              {:shape (ffi/read buf :uint64 (* 8 (* 2 i)))
+              {:shape (ffi/read buf :uint64 (* 16 i))
                :body  body
                :name  (:name e)
                :user  (get-in e [:spec :user-data] 0)}))
