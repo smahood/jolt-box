@@ -721,6 +721,27 @@
       (is (near? (nth v 8) 0.5 1e-6))
       (is (= [5.0 6.0] (subvec v 9 11))))))
 
+(deftest read-bodies-bulk
+  (b2/with-world [w {:gravity [0 0]}]
+    (is (= [] (b2/read-bodies w [])))
+    (testing "more bodies than the first buffer holds, matching one-at-a-time reads"
+      (let [ids (mapv #(b2/body! w {:type :dynamic :pos [% (* 2 %)] :shapes [{:box [0.1 0.1]}]})
+                      (range 150))
+            v   (b2/read-bodies w ids)]
+        (is (= (* 6 150) (count v)))
+        (is (= (mapcat (fn [id] (let [{:keys [x y angle]} (b2/transform w id)
+                                      {:keys [vx vy] av :w} (b2/velocity w id)]
+                                  [x y angle vx vy av]))
+                       ids)
+               v))
+        (testing "a gone body throws, naming it"
+          (let [doomed (b2/body! w :doomed {:type :dynamic :shapes [{:box [0.1 0.1]}]})]
+            (b2/destroy-body! w :doomed)
+            (let [e (try (b2/read-bodies w [(first ids) doomed]) nil
+                         (catch clojure.lang.ExceptionInfo e e))]
+              (is (some? e))
+              (is (= {:op :read-bodies :body doomed} (select-keys (ex-data e) [:op :body]))))))))))
+
 ;; --- regressions ------------------------------------------------------------
 
 (deftest many-joints-in-many-worlds

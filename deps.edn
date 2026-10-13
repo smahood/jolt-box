@@ -1,0 +1,66 @@
+{;; The workspace: build, test and benchmark tasks for every library here,
+ ;; run from this directory (`jolt native`, `jolt test`, `jolt bench`).
+ ;; The libraries themselves are box2d/ and common/, each its own deps root,
+ ;; which is what a project depends on. This file depends on box2d the same
+ ;; way, so the tests also check that box2d's own :jolt/native entry finds
+ ;; its library from a depending project.
+ :paths []
+ :deps {jolt-box/box2d {:local/root "box2d"}}
+ :jolt/min-version "0.8.4"
+
+ :aliases {:test  {:extra-paths ["box2d/test"]
+                   :main-opts   ["-m" "jolt-box.test-runner"]}
+           :bench {:extra-paths ["box2d/bench"]
+                   :main-opts   ["-m" "jolt-box.bench"]}}
+
+ :tasks
+ {:requires ([babashka.fs :as fs])
+
+  :init (do (def mac? (some? (re-find #"^Mac" (System/getProperty "os.name"))))
+            (def lib (str "box2d/native/libjoltbox2d." (if mac? "dylib" "so")))
+            ;; the pinned release; upgrading is a deliberate step (guide §5.1)
+            (def box2d-tag "v3.1.1")
+            (def box2d-home (or (System/getenv "BOX2D_HOME") "box2d/vendor/box2d")))
+
+  box2d-src
+  {:doc "clone the pinned Box2D release into box2d/vendor/box2d (skipped once there)"
+   :task (if (fs/exists? (str box2d-home "/src"))
+           (println "box2d-src: present -" box2d-home)
+           (shell "git" "clone" "--depth" "1" "--branch" box2d-tag
+                  "https://github.com/erincatto/box2d.git" box2d-home))}
+
+  native
+  {:doc "compile the shim and Box2D's sources into the library box2d's :jolt/native names"
+   :depends [box2d-src]
+   ;; Rebuilt only when the shim or this file is newer than the library.
+   ;; Box2D's sources are listed one by one: no shell expands a glob here.
+   ;; -DNDEBUG compiles Box2D's asserts out (they're on unless it's defined,
+   ;; and one stops the process, REPL and all); the shim validates ids
+   ;; instead. Drop it to debug Box2D itself: the shim then reports a failed
+   ;; assert on stderr before stopping.
+   :task (if (and (fs/exists? lib)
+                  (empty? (fs/modified-since lib ["box2d/native/jb2_shim.c" "box2d/native/jb2_shim.h"
+                                                  "deps.edn"])))
+           (println "native: up to date -" lib)
+           (let [srcs (sort (map str (fs/glob (str box2d-home "/src") "*.c")))]
+             (apply shell "clang" "-O2" "-DNDEBUG" "-std=c17" "-shared" "-fPIC"
+                    (str "-I" box2d-home "/include")
+                    (str "-I" box2d-home "/src")
+                    "-Ibox2d/native"
+                    "box2d/native/jb2_shim.c"
+                    (concat srcs ["-lm" "-o" lib]))
+             (println "built:" lib)))}
+
+  test
+  {:doc "headless unit tests"
+   :depends [native]
+   :task (shell "jolt" "-M:test")}
+
+  bench
+  {:doc "micro-benchmarks (box2d/bench/jolt_box/bench.clj)"
+   :depends [native]
+   :task (shell "jolt" "-M:bench")}
+
+  clean-native
+  {:doc "remove the built library (not the vendored Box2D checkout)"
+   :task (do (fs/delete-if-exists lib) (println "removed:" lib))}}}

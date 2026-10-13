@@ -43,6 +43,11 @@ int jb2_body_is_valid(uint64_t body);
 /* Writes 6 doubles: x y angle vx vy w. */
 int jb2_body_read(uint64_t body, double *out);
 
+/* jb2_body_read for count bodies in one call: out gets 6 doubles per body,
+ * in the order of ids. Stops at the first invalid id and returns how many
+ * were read, so a return below count means ids[return] is stale. */
+int jb2_bodies_read(const uint64_t *ids, int count, double *out);
+
 /* Writes 4 doubles: mass, rotational inertia, awake (0/1), type. */
 int jb2_body_mass_info(uint64_t body, double *out);
 

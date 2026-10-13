@@ -26,10 +26,9 @@
   "n doubles of buffer buf starting at double index start, as a realized
   vector."
   [buf start n]
-  (loop [i 0 acc (transient [])]
-    (if (< i n)
-      (recur (inc i) (conj! acc (ffi/read buf :double (* 8 (+ start i)))))
-      (persistent! acc))))
+  ;; One read-array rather than n ffi/reads: the same today, and it picks up a
+  ;; block copy if jolt's typed read-array gets one.
+  (vec (ffi/read-array buf :double n (* 8 start))))
 
 (defn read-doubles
   "The first n doubles of buffer buf, as a realized vector."

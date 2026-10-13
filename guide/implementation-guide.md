@@ -46,6 +46,8 @@ game pulls raylib-jlt with `:deps/root "lib"`).
 
 ```
 jolt-box/
+  deps.edn                       ← workspace: `native`, `box2d-src`, `test`, `bench` tasks,
+                                   :test and :bench aliases; depends on box2d by :local/root
   README.md
   guide/
     implementation-guide.md      ← this file
@@ -53,7 +55,7 @@ jolt-box/
     deps.edn
     src/jolt_box/common.clj
   box2d/
-    deps.edn                     ← :jolt/native, `native` + `box2d-src` tasks, :test alias
+    deps.edn                     ← the library: :jolt/native, :jolt/min-version
     native/
       jb2_shim.h
       jb2_shim.c
@@ -63,6 +65,7 @@ jolt-box/
     src/jolt_box/box2d/ffi.clj   ← raw defcfn layer, no logic
     test/jolt_box/box2d_test.clj
     test/jolt_box/test_runner.clj
+    bench/jolt_box/bench.clj     ← `jolt bench`
   box3d/                         ← later (§7)
 ```
 
@@ -264,14 +267,17 @@ live.
 
   On Apple Silicon, Box2D picks its NEON SIMD path automatically. Leave
   `B2_ENABLE_ASSERT` off (see §5.5).
-- **Tasks in `box2d/deps.edn`:**
-  - `box2d-src`: `git clone --depth 1 --branch v3.1.1` into `vendor/box2d`,
+- **Tasks in the root `deps.edn`**, run from the repo root. The root
+  depends on `box2d` by `:local/root`, as a game does, so `jolt test` also
+  checks that box2d's own `:jolt/native` entry finds the library:
+  - `box2d-src`: `git clone --depth 1 --branch v3.1.1` into `box2d/vendor/box2d`,
     skipped if it's already there. `BOX2D_HOME` overrides the location, like
     ents' `FLECS_HOME`.
   - `native`: depends on `box2d-src`. It rebuilds only when the shim or
-    `deps.edn` is newer than the dylib. Pass the source files as separate
+    the root `deps.edn` is newer than the dylib. Pass the source files as separate
     arguments (use `fs/glob`; no shell expands `*.c` for you).
   - `test`: depends on `native`, then `jolt -M:test`.
+  - `bench`: depends on `native`, then `jolt -M:bench`.
 
 ### 5.2 Handles and ids
 

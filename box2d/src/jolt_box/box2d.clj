@@ -32,7 +32,7 @@
 ;; --- world handle ------------------------------------------------------------
 
 (defrecord World [id gravity alive registry scratch acc max-steps collect-events? events
-                  sensor-events])
+                  sensor-events bulk])
 
 (def ^:private EVENT-CAP
   "The most events of one kind read back from a single step."
@@ -94,11 +94,11 @@
     (cond
       (nil? v)
       (throw (ex-info (str "jolt-box: libjoltbox2d isn't loaded. Run `jolt native` in "
-                           "jolt-box/box2d and restart: the runtime loads it at startup.")
+                           "the jolt-box root and restart: the runtime loads it at startup.")
                       {}))
       (not= v f/VERSION)
       (throw (ex-info (str "jolt-box: the built shim is version " v " and this source expects "
-                           f/VERSION ". Run `jolt native` in jolt-box/box2d and restart.")
+                           f/VERSION ". Run `jolt native` in the jolt-box root and restart.")
                       {:built v :expected f/VERSION})))))
 
 (defn make-world
@@ -127,7 +127,7 @@
                :ev-data (ffi/alloc (* 8 f/EVENT-DOUBLES EVENT-CAP))
                :overlaps (ffi/alloc (* 8 2 f/MAX-OVERLAPS))}                ; sensor overlaps
               (atom 0.0) max-steps (boolean collect-events?) (atom no-events)
-              (atom no-sensor-events)))))
+              (atom no-sensor-events) (atom nil)))))
 
 (defn destroy!
   "Releases world w and everything in it. Safe to call more than once."
@@ -135,6 +135,9 @@
   (when (compare-and-set! (:alive w) true false)
     (f/world-destroy (:id w))
     (run! ffi/free (vals (:scratch w)))
+    (when-let [{:keys [ids out]} @(:bulk w)]
+      (ffi/free ids)
+      (ffi/free out))
     (reset! (:registry w) c/empty-registry))
   nil)
 
@@ -340,15 +343,37 @@
   (let [[x y a vx vy av] (read-state w name-or-id)]
     {:x x :y y :angle a :vx vx :vy vy :w av}))
 
-;; Clojure for now: one read per body. If many bodies a frame shows up in the
-;; dev panel, this becomes a single shim call writing them all into one buffer
-;; (guide §4.1), with the same result.
+;; --- bulk reads ---------------------------------------------------------------
+
+(defn- bulk-buffers
+  "The world's buffers for a bulk read of n bodies: room for n ids and 6n
+  doubles. They belong to the world (like :scratch), grow to the largest
+  read asked for, and are freed by destroy!."
+  [w n]
+  (let [b @(:bulk w)]
+    (if (and b (<= n (:cap b)))
+      b
+      (let [cap (max n 64 (* 2 (or (:cap b) 0)))
+            nb  {:cap cap :ids (ffi/alloc (* 8 cap)) :out (ffi/alloc (* 8 6 cap))}]
+        (when b (ffi/free (:ids b)) (ffi/free (:out b)))
+        (reset! (:bulk w) nb)))))
+
 (defn read-bodies
   "Position and velocity of many bodies at once, as one flat vector:
-  [x y angle vx vy w, x y angle vx vy w, ...] in the order given."
+  [x y angle vx vy w, x y angle vx vy w, ...] in the order given. One shim
+  call for all of them; throws naming the first body that's gone."
   [w names-or-ids]
   (live! w)
-  (into [] (mapcat #(read-state w %)) names-or-ids))
+  (let [names (vec names-or-ids)
+        n     (count names)]
+    (if (zero? n)
+      []
+      (let [{:keys [ids out]} (bulk-buffers w n)
+            got  (do (ffi/write-array ids :uint64 (long-array (map #(body-id w %) names)))
+                     (f/bodies-read ids (int n) out))]
+        (when (< got n)
+          (check! -1 :read-bodies {:body (nth names got)}))
+        (c/read-doubles out (* 6 n))))))
 
 ;; --- moving bodies -----------------------------------------------------------
 

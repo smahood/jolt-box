@@ -17,16 +17,18 @@ The plan, design decisions and step list are in
 Needs clang and git. There's no cmake: Box2D's sources compile straight into
 the shim's dylib.
 
+Run the tasks from the repo root (they live in the root `deps.edn`):
+
 ```
-cd box2d
-jolt native   # clone Box2D v3.1.1 into vendor/ (once) and build native/libjoltbox2d.dylib
+jolt native   # clone Box2D v3.1.1 into box2d/vendor/ (once) and build box2d/native/libjoltbox2d.dylib
 jolt test     # headless tests
+jolt bench    # micro-benchmarks (box2d/bench/jolt_box/bench.clj), e.g. read-bodies
 ```
 
 ## Using it from a project
 
 Needs the jolt runtime 0.8.4 or later (`:jolt/min-version` in
-`box2d/deps.edn`). Build it once with `jolt native` in `box2d/`, then depend
+`box2d/deps.edn`). Build it once with `jolt native` in the repo root, then depend
 on it by path. The library's own `:jolt/native` entry resolves against
 `box2d/deps.edn`, so the project needs nothing else:
 
@@ -69,7 +71,7 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 | `(body! w name? spec)` | `{:type :static\|:kinematic\|:dynamic :pos [x y] :angle a :fixed-rotation? b :awake? b :enable-sleep? b :sleep-threshold :linear-damping :angular-damping :gravity-scale :user-data n :shapes [{:box [hw hh] :offset [x y] :angle a :density d :friction f :restitution r :contact-events? b :hit-events? b :sensor? b :sensor-events? b}]}` → id. Shapes are `{:box [hw hh]}`, `{:circle r}` or `{:capsule [[x1 y1] [x2 y2]] :radius r}`, and take `:group :category :mask` for collision filtering (same negative group never collides). A sensor only sees shapes with `:sensor-events? true`. Re-evaluating a named body remakes its joints |
 | `(destroy-body! w body)` | |
 | `(transform w body)`, `(velocity w body)` | `{:x :y :angle}`, `{:vx :vy :w}` |
-| `(read-bodies w bodies)` | `[x y angle vx vy w ...]` for many bodies at once |
+| `(read-bodies w bodies)` | `[x y angle vx vy w ...]` for many bodies at once, in one shim call |
 | `(impulse! w body [ix iy])`, `(impulse! w body [ix iy] [px py])` | a change in momentum, at the center or a world point |
 | `(force! w body [fx fy])`, `(force! w body [fx fy] [px py])` | a push for the next step |
 | `(set-velocity! w body [vx vy])`, `(set-angular-velocity! w body av)` | |

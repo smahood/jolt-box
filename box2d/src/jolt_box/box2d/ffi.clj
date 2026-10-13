@@ -21,6 +21,7 @@
 (ffi/defcfn body-destroy   "jb2_body_destroy"   [:uint64] :int)
 (ffi/defcfn body-valid     "jb2_body_is_valid"  [:uint64] :int)
 (ffi/defcfn body-read      "jb2_body_read"      [:uint64 :pointer] :int)
+(ffi/defcfn bodies-read    "jb2_bodies_read"    [:pointer :int :pointer] :int)
 (ffi/defcfn body-mass-info "jb2_body_mass_info" [:uint64 :pointer] :int)
 (ffi/defcfn body-user-data "jb2_body_user_data" [:uint64] :uint64)
 

@@ -104,6 +104,13 @@ int jb2_body_read(uint64_t body, double *out)
 	return JB2_OK;
 }
 
+int jb2_bodies_read(const uint64_t *ids, int count, double *out)
+{
+	for (int i = 0; i < count; ++i)
+		if (jb2_body_read(ids[i], out + 6 * i) != JB2_OK) return i;
+	return count;
+}
+
 int jb2_body_mass_info(uint64_t body, double *out)
 {
 	if (!jb2_body_is_valid(body)) return JB2_BAD_ID;
