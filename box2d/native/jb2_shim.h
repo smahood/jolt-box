@@ -3,8 +3,9 @@
 
 #include <stdint.h>
 
-/* Flat C ABI over the Box2D v3.1 pieces jolt-box needs. jolt.ffi can't pass
- * structs by value, so everything here is scalars and pointers.
+/* Flat C ABI over the Box2D v3.1 pieces jolt-box needs. Everything here is
+ * scalars and pointers, so each operation is one foreign call with no struct
+ * to build or read (guide §3 has the reasons).
  *
  * Ids cross as the integers b2Store*Id produce: worlds as uint32, bodies and
  * shapes as uint64. A valid id is never 0, so 0 means "failed".

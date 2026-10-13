@@ -2,9 +2,9 @@
 
  ;; jolt-box/box2d wraps Box2D v3 (github.com/erincatto/box2d) for jolt.
  ;;
- ;; Box2D passes b2Vec2/b2Rot and its ids by value, which jolt.ffi can't
- ;; express, so a flat C shim (native/jb2_shim.c) takes and returns only
- ;; scalars and pointers. The shim and Box2D's own sources are compiled into
+ ;; A flat C shim (native/jb2_shim.c) takes and returns only scalars and
+ ;; pointers: it validates ids before Box2D can assert on them, passes ids
+ ;; as plain integers and reads in bulk (guide §3). The shim and Box2D's own sources are compiled into
  ;; one dylib by `jolt native`, the same way ents builds flecs. The build,
  ;; test and bench tasks are in the workspace's ../deps.edn: run them from
  ;; the repo root. See ../guide/implementation-guide.md.

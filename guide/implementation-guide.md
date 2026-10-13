@@ -101,9 +101,29 @@ signature, layout or constant changes (§8).
 
 ## 3. Background decisions (from the planning conversation)
 
-- **Why a shim at all?** Box2D passes `b2Vec2`, `b2Rot`, `b2Transform` and its
-  id structs **by value**, and `jolt.ffi` can't express that. Every shim
-  function takes and returns only scalars and pointers.
+- **Why a shim at all?** The original reason was that Box2D passes `b2Vec2`,
+  `b2Rot`, `b2Transform` and its id structs **by value**, and we thought
+  `jolt.ffi` couldn't express that. It can: `[:by-value [:struct ...]]` has
+  worked since jolt 0.7.23. The shim stays, for what it does that a direct
+  binding wouldn't:
+  - **It validates every id before calling in.** A Box2D assert on a stale id
+    stops the process, REPL and all (§5.5). Checking from Clojure first would
+    be a second foreign call for every operation.
+  - **Ids cross as plain integers** (`b2Store*Id`), so they fit in maps, sets
+    and ents components with no struct to build or read per call (§5.2).
+  - **Exact angles.** `b2MakeRot` and `b2Rot_GetAngle` are approximations,
+    off by up to ~1e-3 rad; the shim uses `cosf`/`sinf`/`atan2`.
+  - **One crossing per operation, and bulk reads in one.** A foreign call costs
+    about 40 ns; a body's state is one call instead of several getters, and
+    `jb2_bodies_read` reads any number of bodies at once. Events, which point
+    into Box2D-owned arrays that only live until the next step, are copied
+    into flat buffers in one call.
+  - **Stability** (the last point below): flat functions don't break when
+    Box2D reshapes its structs.
+
+  Every shim function takes and returns only scalars and pointers. A direct
+  binding (by-value structs included) is fine for a call that takes no id and
+  can't assert, if one ever comes up.
 - **Why not a per-game shim?** naval-battle has a game-specific Box3D shim
   (`native/voxel_b3.c`). It works, but none of it can be reused. A library
   gives every future project the same API and fixes FFI problems in one place.

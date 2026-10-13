@@ -10,7 +10,8 @@ built for the REPL.
 - `box3d/`: later
 
 The plan, design decisions and step list are in
-[guide/implementation-guide.md](guide/implementation-guide.md).
+[guide/implementation-guide.md](guide/implementation-guide.md); what's left is
+in [guide/todo-later.md](guide/todo-later.md).
 
 ## Build and test (box2d)
 
