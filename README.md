@@ -25,14 +25,23 @@ jolt test     # headless tests
 
 ## Using it from a project
 
+Needs the jolt runtime 0.8.4 or later (`:jolt/min-version` in
+`box2d/deps.edn`). Build it once with `jolt native` in `box2d/`, then depend
+on it by path. The library's own `:jolt/native` entry resolves against
+`box2d/deps.edn`, so the project needs nothing else:
+
 ```clojure
 ;; deps.edn
 :deps {jolt-box/box2d {:local/root "/Users/shaunmahood/Documents/SideProjects/jolt-box/box2d"}}
-;; :jolt/native paths resolve from the directory jolt is launched in,
-;; so point at the built library directly
-:jolt/native [{:name "joltbox2d"
-               :darwin ["/Users/shaunmahood/Documents/SideProjects/jolt-box/box2d/native/libjoltbox2d.dylib"]}]
 ```
+
+The library is declared `:optional`, so a project starts without the build.
+`(b2/available?)` says whether it loaded, and `make-world` throws with what
+to do when it didn't (not built yet, or built from an older shim). The
+runtime loads it at startup, so restart the REPL after a first
+`jolt native` or a shim change. To use a build somewhere else, declare
+`{:name "joltbox2d" ...}` under `:jolt/native` in the project with its own
+paths; a project's declaration overlays the dependency's.
 
 ```clojure
 (require '[jolt-box.box2d :as b2])
@@ -52,6 +61,7 @@ name works too. Re-evaluating a named `body!` replaces the old body.
 
 | | |
 |---|---|
+| `(available?)` | true when libjoltbox2d is loaded and its shim version matches |
 | `(make-world {:gravity [gx gy] :max-steps 5 :hit-event-threshold 1.0 :collect-events? true})` | a world handle (default gravity `[0 9.8]`) |
 | `(destroy! w)`, `(with-world [w opts] ...)` | release it; `with-world` does so in `finally` |
 | `(step! w dt)`, `(step! w dt substeps)` | a raw step (4 substeps by default) |

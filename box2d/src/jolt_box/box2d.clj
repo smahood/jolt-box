@@ -73,6 +73,34 @@
     (throw (ex-info (str (name op) ": invalid or stale id") (assoc data :op op))))
   rc)
 
+;; --- the native library ------------------------------------------------------
+
+(defn- loaded-version
+  "The loaded shim's JB2_VERSION, or nil when libjoltbox2d isn't loaded."
+  []
+  (try (long (f/version)) (catch Throwable _ nil)))
+
+(defn available?
+  "True when libjoltbox2d is loaded and its shim is the version this
+  namespace expects. deps.edn declares the library :optional, so a project
+  starts without the build; this says whether physics will work."
+  []
+  (= f/VERSION (loaded-version)))
+
+(defn- require-native!
+  "Throws, saying what to do, unless available? is true."
+  []
+  (let [v (loaded-version)]
+    (cond
+      (nil? v)
+      (throw (ex-info (str "jolt-box: libjoltbox2d isn't loaded. Run `jolt native` in "
+                           "jolt-box/box2d and restart: the runtime loads it at startup.")
+                      {}))
+      (not= v f/VERSION)
+      (throw (ex-info (str "jolt-box: the built shim is version " v " and this source expects "
+                           f/VERSION ". Run `jolt native` in jolt-box/box2d and restart.")
+                      {:built v :expected f/VERSION})))))
+
 (defn make-world
   "A new single-threaded Box2D world. Options:
     :gravity [gx gy]       default [0 9.8], y-down
@@ -86,6 +114,7 @@
   ([] (make-world {}))
   ([{:keys [gravity max-steps hit-event-threshold collect-events?]
      :or   {gravity [0 9.8] max-steps 5 hit-event-threshold -1.0 collect-events? true}}]
+   (require-native!)
    (let [[gx gy] gravity
          id (f/world-create (double gx) (double gy) (double hit-event-threshold))]
      (when (zero? id)

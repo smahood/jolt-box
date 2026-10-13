@@ -9,7 +9,17 @@
  ;; See ../guide/implementation-guide.md.
  :deps {jolt-box/common {:local/root "../common"}}
 
- :jolt/native [{:name "joltbox2d"
+ ;; 0.8.4 is where a dependency's relative :jolt/native path began to
+ ;; resolve against its own deps.edn, which is how a project that depends on
+ ;; this one finds the library without repeating its path.
+ :jolt/min-version "0.8.4"
+
+ ;; Paths are relative to this file, for a depending project too. :optional,
+ ;; so a project without the build still starts; jolt-box.box2d/available?
+ ;; says whether it loaded, and make-world throws saying what to do if not.
+ ;; The runtime loads it at startup, so after a first `jolt native` a running
+ ;; REPL has to be restarted.
+ :jolt/native [{:name "joltbox2d" :optional true
                 :darwin ["native/libjoltbox2d.dylib"]
                 :linux  ["native/libjoltbox2d.so"]}]
 

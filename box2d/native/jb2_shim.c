@@ -13,6 +13,11 @@ static b2Rot jb2_rot(double angle)
 	return (b2Rot){ cosf((float)angle), sinf((float)angle) };
 }
 
+uint32_t jb2_version(void)
+{
+	return JB2_VERSION;
+}
+
 /* --- worlds --------------------------------------------------------------- */
 
 /* Box2D reports a failed assert with printf, which is lost if the process

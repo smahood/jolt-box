@@ -19,6 +19,13 @@
 #define JB2_OK 0
 #define JB2_BAD_ID (-1)
 
+/* The version of this ABI: it goes up whenever a signature, a layout or a
+ * constant here changes. jolt-box.box2d/available? compares it with the
+ * version the Clojure side was written against, so a stale dylib is caught
+ * at load instead of misreading buffers. */
+#define JB2_VERSION 1
+uint32_t jb2_version(void);
+
 /* worlds: single-threaded (workerCount 1). hit_threshold is the approach
  * speed (m/s) above which hits are reported; negative keeps Box2D's default. */
 uint32_t jb2_world_create(double gx, double gy, double hit_threshold);

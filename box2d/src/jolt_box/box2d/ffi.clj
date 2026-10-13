@@ -5,6 +5,10 @@
   Functions returning :int return 0 (ok) or -1 (bad id)."
   (:require [jolt.ffi :as ffi]))
 
+;; --- library ------------------------------------------------------------------
+(def VERSION 1)             ; JB2_VERSION this namespace was written against
+(ffi/defcfn version        "jb2_version"        [] :uint32)
+
 ;; --- worlds -------------------------------------------------------------------
 (ffi/defcfn world-create   "jb2_world_create"   [:double :double :double] :uint32)
 (ffi/defcfn world-destroy  "jb2_world_destroy"  [:uint32] :int)

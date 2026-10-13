@@ -80,15 +80,19 @@ Anything else stays in `box2d/` until Box3D proves it's really shared.
 Guessing the shared layer before the second library exists usually guesses
 wrong.
 
-**Consuming it from a game** (the same quirk as ents and raygui): `:jolt/native`
-paths resolve from the directory jolt was launched in, so the game's
-`deps.edn` points at the built dylib with an absolute path:
+**Consuming it from a game.** Since jolt 0.8.4 a dependency's relative
+`:jolt/native` path resolves against the `deps.edn` that declared it, so
+`box2d/deps.edn` declares `native/libjoltbox2d.dylib` itself (with
+`:jolt/min-version "0.8.4"` and `:optional true`) and the game only needs
+the dep:
 
 ```clojure
 :deps {jolt-box/box2d {:local/root "/Users/shaunmahood/Documents/SideProjects/jolt-box/box2d"}}
-:jolt/native [{:name "joltbox2d"
-               :darwin ["/Users/shaunmahood/Documents/SideProjects/jolt-box/box2d/native/libjoltbox2d.dylib"]}]
 ```
+
+`b2/available?` checks the library loaded and that its `jb2_version`
+matches `jolt-box.box2d.ffi/VERSION`; bump both together whenever a shim
+signature, layout or constant changes (§8).
 
 ---
 
@@ -943,6 +947,8 @@ When naval-battle moves over:
 - [ ] shim function `jb2_<noun>_<verb>`, scalars and pointers only, validates
       every id
 - [ ] declared in `jb2_shim.h` with a one-line comment on ownership and units
+- [ ] a changed signature, layout or constant bumps `JB2_VERSION` and
+      `jolt-box.box2d.ffi/VERSION` together (adding a function doesn't)
 - [ ] raw binding in `jolt-box.box2d.ffi`, no logic
 - [ ] wrapper in `jolt-box.box2d`: map in, map or realized vector out, throws
       `ex-info` on failure

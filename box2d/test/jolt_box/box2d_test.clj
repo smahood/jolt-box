@@ -21,6 +21,9 @@
         (vector? x) (every? plain? x)
         :else       (or (nil? x) (number? x) (keyword? x) (string? x) (boolean? x))))
 
+(deftest native-library
+  (is (true? (b2/available?)) "libjoltbox2d is loaded and its shim version matches"))
+
 (deftest world-lifecycle
   (b2/with-world [w]
     (is (pos? (:id w)))
