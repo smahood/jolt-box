@@ -1,0 +1,4 @@
+;; jolt.ffi's config lives in imports/ (loaded automatically); refresh it with
+;;   clj-kondo --lint ../jolt --dependencies --copy-configs
+;; jolt-box's own export is used straight from its source.
+{:config-paths ["../box2d/src/clj-kondo.exports/jolt-box/box2d"]}

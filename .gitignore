@@ -19,3 +19,6 @@ pom.xml.asc
 vendor/
 *.dylib
 *.so
+
+# clj-kondo analysis cache (config and imports/ are committed)
+.clj-kondo/.cache/

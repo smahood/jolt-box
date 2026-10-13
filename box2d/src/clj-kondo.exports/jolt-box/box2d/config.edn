@@ -1,0 +1,6 @@
+;; clj-kondo config for jolt-box.box2d, exported so a project that depends on
+;; it can import it: `clj-kondo --lint "$(jolt path)" --dependencies --copy-configs`.
+;;
+;; with-world's binding is [w] or [w opts], and `let` rejects the first, so it
+;; gets a macroexpand hook instead of :lint-as.
+{:hooks {:macroexpand {jolt-box.box2d/with-world jolt-box.box2d/with-world}}}
